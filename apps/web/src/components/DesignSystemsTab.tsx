@@ -1,5 +1,11 @@
-import { useMemo, useState } from 'react';
-import { useT } from '../i18n';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useI18n } from '../i18n';
+import {
+  localizeDesignSystemCategory,
+  localizeDesignSystemSummary,
+} from '../i18n/content';
+import { fetchDesignSystemShowcase } from '../providers/registry';
+import { buildSrcdoc } from '../runtime/srcdoc';
 import type { DesignSystemSummary, Surface } from '../types';
 
 interface Props {
@@ -37,10 +43,14 @@ function surfaceOf(system: DesignSystemSummary): Surface {
 }
 
 export function DesignSystemsTab({ systems, selectedId, onSelect, onPreview }: Props) {
-  const t = useT();
+  const { locale, t } = useI18n();
   const [filter, setFilter] = useState('');
   const [surfaceFilter, setSurfaceFilter] = useState<SurfaceFilter>('all');
   const [category, setCategory] = useState<string>('All');
+  // Cache fetched showcase HTML across re-renders so cards never re-flicker
+  // when the user filters / scrolls back. null = "in flight"; undefined =
+  // "not yet requested". Mirrors the pattern used by ExamplesTab.
+  const [thumbs, setThumbs] = useState<Record<string, string | null>>({});
 
   const surfaceScoped = useMemo(
     () => surfaceFilter === 'all' ? systems : systems.filter((s) => surfaceOf(s) === surfaceFilter),
@@ -67,22 +77,37 @@ export function DesignSystemsTab({ systems, selectedId, onSelect, onPreview }: P
     return surfaceScoped.filter((s) => {
       if (category !== 'All' && (s.category || 'Uncategorized') !== category) return false;
       if (!q) return true;
+      const summary = localizeDesignSystemSummary(locale, s).toLowerCase();
+      const categoryLabel = localizeDesignSystemCategory(
+        locale,
+        s.category || 'Uncategorized',
+      ).toLowerCase();
       return (
         s.title.toLowerCase().includes(q) ||
-        s.summary.toLowerCase().includes(q)
+        s.summary.toLowerCase().includes(q) ||
+        summary.includes(q) ||
+        categoryLabel.includes(q)
       );
     });
-  }, [surfaceScoped, filter, category]);
+  }, [surfaceScoped, filter, category, locale]);
 
-  // The category metadata coming from each design system is authored in
-  // English. We translate the well-known buckets (All / Uncategorized) but
-  // pass the rest through unchanged so user-facing labels stay aligned with
-  // the underlying tags.
+  // Category metadata is authored in English; keep raw values in state for
+  // filtering while localizing the visible labels for the current UI locale.
   const renderCategory = (c: string) => {
     if (c === 'All') return t('ds.categoryAll');
     if (c === 'Uncategorized') return t('ds.categoryUncategorized');
-    return c;
+    return localizeDesignSystemCategory(locale, c);
   };
+
+  function loadThumb(id: string) {
+    setThumbs((prev) => {
+      if (prev[id] !== undefined) return prev;
+      void fetchDesignSystemShowcase(id).then((html) => {
+        setThumbs((p) => ({ ...p, [id]: html }));
+      });
+      return { ...prev, [id]: null };
+    });
+  }
 
   return (
     <div className="tab-panel">
@@ -126,53 +151,154 @@ export function DesignSystemsTab({ systems, selectedId, onSelect, onPreview }: P
       {filtered.length === 0 ? (
         <div className="tab-empty">{t('ds.emptyNoMatch')}</div>
       ) : (
-        <div className="ds-list">
-          {filtered.map((s) => {
-            const active = s.id === selectedId;
-            return (
-              <div
-                key={s.id}
-                className={`ds-row ${active ? 'active' : ''}`}
-                onClick={() => onSelect(s.id)}
-              >
-                <div className="ds-row-body">
-                  <div className="ds-row-title">
-                    {s.title}
-                    {active ? (
-                      <span className="ds-row-default">
-                        {t('ds.badgeDefault')}
-                      </span>
-                    ) : null}
-                  </div>
-                  <div className="ds-row-summary">{s.summary || s.category}</div>
-                </div>
-                {s.swatches && s.swatches.length > 0 ? (
-                  <div className="ds-row-swatches" aria-hidden>
-                    {s.swatches.map((c, i) => (
-                      <span
-                        key={i}
-                        className="ds-row-swatch"
-                        style={{ background: c }}
-                        title={c}
-                      />
-                    ))}
-                  </div>
-                ) : null}
-                <button
-                  className="ghost"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onPreview(s.id);
-                  }}
-                  title={t('ds.previewTitle')}
-                >
-                  {t('ds.preview')}
-                </button>
-              </div>
-            );
-          })}
+        <div className="ds-grid">
+          {filtered.map((s) => (
+            <DesignSystemCard
+              key={s.id}
+              system={s}
+              active={s.id === selectedId}
+              thumbHtml={thumbs[s.id]}
+              onIntersect={() => loadThumb(s.id)}
+              onSelect={() => onSelect(s.id)}
+              onPreview={() => onPreview(s.id)}
+            />
+          ))}
         </div>
       )}
+    </div>
+  );
+}
+
+interface CardProps {
+  system: DesignSystemSummary;
+  active: boolean;
+  thumbHtml: string | null | undefined;
+  onIntersect: () => void;
+  onSelect: () => void;
+  onPreview: () => void;
+}
+
+function DesignSystemCard({
+  system,
+  active,
+  thumbHtml,
+  onIntersect,
+  onSelect,
+  onPreview,
+}: CardProps) {
+  const { locale, t } = useI18n();
+  const ref = useRef<HTMLDivElement | null>(null);
+
+  // Lazy-load the showcase iframe only when the card scrolls into the
+  // viewport. With ~120 design systems we can't afford to mount every
+  // iframe up front — even with `loading="lazy"`, srcDoc iframes ignore
+  // the native lazy hint, so we gate via IntersectionObserver.
+  useEffect(() => {
+    if (thumbHtml !== undefined) return;
+    const node = ref.current;
+    if (!node || typeof IntersectionObserver === 'undefined') {
+      onIntersect();
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            onIntersect();
+            observer.disconnect();
+            break;
+          }
+        }
+      },
+      { rootMargin: '200px' },
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [thumbHtml, onIntersect]);
+
+  const localizedSummary = localizeDesignSystemSummary(locale, system);
+  const categoryLabel = localizeDesignSystemCategory(
+    locale,
+    system.category || 'Uncategorized',
+  );
+
+  return (
+    <div
+      ref={ref}
+      className={`ds-card ${active ? 'active' : ''}`}
+      role="button"
+      tabIndex={0}
+      onClick={onSelect}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onSelect();
+        }
+      }}
+    >
+      <div
+        className="ds-card-thumb"
+        onClick={(e) => {
+          e.stopPropagation();
+          onPreview();
+        }}
+        title={t('ds.previewTitle')}
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            e.stopPropagation();
+            onPreview();
+          }
+        }}
+      >
+        {thumbHtml ? (
+          <iframe
+            title={`${system.title} preview`}
+            sandbox="allow-scripts"
+            srcDoc={buildSrcdoc(thumbHtml)}
+            tabIndex={-1}
+            aria-hidden
+          />
+        ) : (
+          <div className="ds-card-thumb-fallback" aria-hidden>
+            {system.swatches && system.swatches.length > 0 ? (
+              <div className="ds-card-thumb-swatches">
+                {system.swatches.map((c, i) => (
+                  <span key={i} style={{ background: c }} />
+                ))}
+              </div>
+            ) : (
+              <span className="ds-card-thumb-placeholder">
+                {thumbHtml === null ? '' : ''}
+              </span>
+            )}
+          </div>
+        )}
+        <span className="ds-card-thumb-overlay" aria-hidden>
+          {t('ds.preview')}
+        </span>
+      </div>
+      <div className="ds-card-meta">
+        <div className="ds-card-title-row">
+          <span className="ds-card-title">{system.title}</span>
+          {active ? (
+            <span className="ds-card-badge">{t('ds.badgeDefault')}</span>
+          ) : null}
+        </div>
+        <div className="ds-card-summary">{localizedSummary}</div>
+        <div className="ds-card-footer">
+          <span className="ds-card-category">{categoryLabel}</span>
+          {system.swatches && system.swatches.length > 0 ? (
+            <div className="ds-card-swatches" aria-hidden>
+              {system.swatches.map((c, i) => (
+                <span key={i} style={{ background: c }} title={c} />
+              ))}
+            </div>
+          ) : null}
+        </div>
+      </div>
     </div>
   );
 }

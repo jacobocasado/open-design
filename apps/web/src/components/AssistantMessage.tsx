@@ -9,6 +9,7 @@ import { useT } from '../i18n';
 import { unfinishedTodosFromEvents, type TodoItem } from '../runtime/todos';
 import type { Dict } from '../i18n/types';
 import { agentDisplayName } from '../utils/agentLabels';
+import { exactDateTime, messageTime, relativeTimeLong } from '../utils/chatTime';
 import type { AgentEvent, ChatMessage, ProjectFile } from '../types';
 
 type TranslateFn = (key: keyof Dict, vars?: Record<string, string | number>) => string;
@@ -70,7 +71,10 @@ export function AssistantMessage({
 
   return (
     <div className="msg assistant">
-      <div className="role">{roleLabel}</div>
+      <div className="role">
+        <span>{roleLabel}</span>
+        <MessageTimestamp message={message} t={t} />
+      </div>
       <div className="assistant-flow">
         {blocks.length === 0 && streaming ? (
           <WaitingPill startedAt={message.startedAt} latestStatus={latestStatusLabel(events)} />
@@ -101,6 +105,7 @@ export function AssistantMessage({
               <ToolGroupCard
                 key={i}
                 items={b.items}
+                runStreaming={streaming}
                 projectFileNames={projectFileNames}
                 onRequestOpenFile={onRequestOpenFile}
               />
@@ -132,6 +137,16 @@ export function AssistantMessage({
         />
       </div>
     </div>
+  );
+}
+
+function MessageTimestamp({ message, t }: { message: ChatMessage; t: TranslateFn }) {
+  const ts = messageTime(message);
+  if (!ts) return null;
+  return (
+    <time className="msg-time" dateTime={new Date(ts).toISOString()} title={exactDateTime(ts)}>
+      {relativeTimeLong(ts, t)}
+    </time>
   );
 }
 
@@ -499,10 +514,12 @@ interface ToolItem {
 
 function ToolGroupCard({
   items,
+  runStreaming,
   projectFileNames,
   onRequestOpenFile,
 }: {
   items: ToolItem[];
+  runStreaming: boolean;
   projectFileNames?: Set<string>;
   onRequestOpenFile?: (name: string) => void;
 }) {
@@ -516,6 +533,7 @@ function ToolGroupCard({
       <ToolCard
         use={items[0]!.use}
         result={items[0]!.result}
+        runStreaming={runStreaming}
         projectFileNames={projectFileNames}
         onRequestOpenFile={onRequestOpenFile}
       />
@@ -545,6 +563,7 @@ function ToolGroupCard({
               key={i}
               use={it.use}
               result={it.result}
+              runStreaming={runStreaming}
               projectFileNames={projectFileNames}
               onRequestOpenFile={onRequestOpenFile}
             />

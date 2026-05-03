@@ -8,6 +8,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
 import { composeSystemPrompt } from './prompts/system.js';
+import { createCommandInvocation } from '@open-design/platform';
 import {
   detectAgents,
   getAgentDef,
@@ -16,6 +17,8 @@ import {
   sanitizeCustomModel,
 } from './agents.js';
 import { listSkills } from './skills.js';
+import { listCodexPets, readCodexPetSpritesheet } from './codex-pets.js';
+import { syncCommunityPets } from './community-pets-sync.js';
 import { listDesignSystems, readDesignSystem } from './design-systems.js';
 import { attachAcpSession } from './acp.js';
 import { attachPiRpcSession } from './pi-rpc.js';
@@ -29,6 +32,7 @@ import { importClaudeDesignZip } from './claude-design-import.js';
 import { listPromptTemplates, readPromptTemplate } from './prompt-templates.js';
 import { buildDocumentPreview } from './document-preview.js';
 import { lintArtifact, renderFindingsForAgent } from './lint-artifact.js';
+import { loadCraftSections } from './craft.js';
 import { generateMedia } from './media.js';
 import {
   AUDIO_DURATIONS_SEC,
@@ -40,7 +44,9 @@ import {
   VIDEO_MODELS,
 } from './media-models.js';
 import { readMaskedConfig, writeConfig } from './media-config.js';
+import { readAppConfig, writeAppConfig } from './app-config.js';
 import {
+  buildProjectArchive,
   decodeMultipartFilename,
   deleteProjectFile,
   ensureProject,
@@ -52,8 +58,10 @@ import {
   writeProjectFile,
 } from './projects.js';
 import { validateArtifactManifestInput } from './artifact-manifest.js';
+import { readCurrentAppVersionInfo } from './app-version.js';
 import {
   deleteConversation,
+  deletePreviewComment,
   deleteProject as dbDeleteProject,
   deleteTemplate,
   getConversation,
@@ -69,21 +77,25 @@ import {
   listDeployments,
   listLatestProjectRunStatuses,
   listMessages,
+  listPreviewComments,
   listProjects,
   listTabs,
   listTemplates,
   openDatabase,
   setTabs,
   updateConversation,
+  updatePreviewCommentStatus,
   updateProject,
   upsertDeployment,
   upsertMessage,
+  upsertPreviewComment,
 } from './db.js';
 import {
   buildDeployFileSet,
   checkDeploymentUrl,
   DeployError,
   deployToVercel,
+  prepareDeployPreflight,
   publicDeployConfig,
   readVercelConfig,
   VERCEL_PROVIDER_ID,
@@ -102,22 +114,111 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 export function resolveProjectRoot(moduleDir: string): string {
   const base = path.basename(moduleDir);
-  const daemonDir = base === 'dist' || base === 'src'
-    ? path.dirname(moduleDir)
-    : moduleDir;
+  const daemonDir =
+    base === 'dist' || base === 'src' ? path.dirname(moduleDir) : moduleDir;
   return path.resolve(daemonDir, '../..');
 }
 
 const PROJECT_ROOT = resolveProjectRoot(__dirname);
 const RESOURCE_ROOT_ENV = 'OD_RESOURCE_ROOT';
 
+export function normalizeCommentAttachments(input) {
+  if (!Array.isArray(input)) return [];
+  return input
+    .map((raw, index) => {
+      if (!raw || typeof raw !== 'object') return null;
+      const filePath = cleanString(raw.filePath);
+      const elementId = cleanString(raw.elementId);
+      const selector = cleanString(raw.selector);
+      const label = cleanString(raw.label);
+      const comment = cleanString(raw.comment);
+      if (!filePath || !elementId || !selector || !comment) return null;
+      return {
+        id: cleanString(raw.id) || `comment-${index + 1}`,
+        order: Number.isFinite(raw.order)
+          ? Math.max(1, Math.round(raw.order))
+          : index + 1,
+        filePath,
+        elementId,
+        selector,
+        label,
+        comment,
+        currentText: compactString(raw.currentText, 160),
+        pagePosition: normalizeAttachmentPosition(raw.pagePosition),
+        htmlHint: compactString(raw.htmlHint, 180),
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.order - b.order);
+}
+
+export function renderCommentAttachmentHint(commentAttachments) {
+  if (!commentAttachments.length) return '';
+  const lines = [
+    '',
+    '',
+    '<attached-preview-comments>',
+    'Scope: edit the target element by default. Use the smallest necessary parent wrapper only if the target cannot satisfy the comment. Preserve stable ids and unrelated siblings.',
+  ];
+  for (const item of commentAttachments) {
+    lines.push(
+      '',
+      `${item.order}. ${item.elementId}`,
+      `file: ${item.filePath}`,
+      `selector: ${item.selector}`,
+      `label: ${item.label || '(unlabeled)'}`,
+      `position: ${formatAttachmentPosition(item.pagePosition)}`,
+      `currentText: ${item.currentText || '(empty)'}`,
+      `htmlHint: ${item.htmlHint || '(none)'}`,
+      `comment: ${item.comment}`,
+    );
+  }
+  lines.push('</attached-preview-comments>');
+  return lines.join('\n');
+}
+
+function cleanString(value) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function compactString(value, max) {
+  const text = cleanString(value).replace(/\s+/g, ' ');
+  return text.length > max ? `${text.slice(0, max - 3)}...` : text;
+}
+
+function normalizeAttachmentPosition(input) {
+  const value = input && typeof input === 'object' ? input : {};
+  return {
+    x: finiteAttachmentNumber(value.x),
+    y: finiteAttachmentNumber(value.y),
+    width: finiteAttachmentNumber(value.width),
+    height: finiteAttachmentNumber(value.height),
+  };
+}
+
+function finiteAttachmentNumber(value) {
+  return Number.isFinite(value) ? Math.round(value) : 0;
+}
+
+function formatAttachmentPosition(position) {
+  return `x=${position.x}, y=${position.y}, width=${position.width}, height=${position.height}`;
+}
+
 function isPathWithin(base, target) {
   const relativePath = path.relative(path.resolve(base), path.resolve(target));
-  return relativePath === '' || (relativePath.length > 0 && !relativePath.startsWith('..') && !path.isAbsolute(relativePath));
+  return (
+    relativePath === '' ||
+    (relativePath.length > 0 &&
+      !relativePath.startsWith('..') &&
+      !path.isAbsolute(relativePath))
+  );
 }
 
 function resolveProcessResourcesPath() {
-  if (typeof process.resourcesPath === 'string' && process.resourcesPath.length > 0) {
+  if (
+    typeof process.resourcesPath === 'string' &&
+    process.resourcesPath.length > 0
+  ) {
     return process.resourcesPath;
   }
 
@@ -126,9 +227,24 @@ function resolveProcessResourcesPath() {
   // Infer the macOS app Resources directory from that bundled Node path.
   const resourcesMarker = `${path.sep}Contents${path.sep}Resources${path.sep}`;
   const markerIndex = process.execPath.indexOf(resourcesMarker);
-  if (markerIndex === -1) return null;
+  if (markerIndex !== -1) {
+    return process.execPath.slice(0, markerIndex + resourcesMarker.length - 1);
+  }
 
-  return process.execPath.slice(0, markerIndex + resourcesMarker.length - 1);
+  const normalizedExecPath = process.execPath.toLowerCase();
+  const windowsResourceBinMarker =
+    `${path.sep}resources${path.sep}open-design${path.sep}bin${path.sep}`.toLowerCase();
+  const windowsMarkerIndex = normalizedExecPath.indexOf(
+    windowsResourceBinMarker,
+  );
+  if (windowsMarkerIndex !== -1) {
+    return process.execPath.slice(
+      0,
+      windowsMarkerIndex + `${path.sep}resources`.length,
+    );
+  }
+
+  return null;
 }
 
 export function resolveDaemonResourceRoot({
@@ -143,7 +259,9 @@ export function resolveDaemonResourceRoot({
     .map((base) => path.resolve(base));
 
   if (!normalizedSafeBases.some((base) => isPathWithin(base, resolved))) {
-    throw new Error(`${RESOURCE_ROOT_ENV} must be under the workspace root or app resources path`);
+    throw new Error(
+      `${RESOURCE_ROOT_ENV} must be under the workspace root or app resources path`,
+    );
   }
 
   return resolved;
@@ -170,10 +288,24 @@ const DESIGN_SYSTEMS_DIR = resolveDaemonResourceDir(
   'design-systems',
   path.join(PROJECT_ROOT, 'design-systems'),
 );
+const CRAFT_DIR = resolveDaemonResourceDir(
+  DAEMON_RESOURCE_ROOT,
+  'craft',
+  path.join(PROJECT_ROOT, 'craft'),
+);
 const FRAMES_DIR = resolveDaemonResourceDir(
   DAEMON_RESOURCE_ROOT,
   'frames',
   path.join(PROJECT_ROOT, 'assets', 'frames'),
+);
+// Curated pets baked into the repo via `scripts/bake-community-pets.ts`.
+// `listCodexPets` scans this in addition to `~/.codex/pets/` so the
+// "Recently hatched" grid is non-empty out-of-the-box and users do not
+// need to hit the "Download community pets" button to try a few pets.
+const BUNDLED_PETS_DIR = resolveDaemonResourceDir(
+  DAEMON_RESOURCE_ROOT,
+  'community-pets',
+  path.join(PROJECT_ROOT, 'assets', 'community-pets'),
 );
 const PROMPT_TEMPLATES_DIR = resolveDaemonResourceDir(
   DAEMON_RESOURCE_ROOT,
@@ -187,23 +319,21 @@ const ARTIFACTS_DIR = path.join(RUNTIME_DATA_DIR, 'artifacts');
 const PROJECTS_DIR = path.join(RUNTIME_DATA_DIR, 'projects');
 fs.mkdirSync(PROJECTS_DIR, { recursive: true });
 
-// Windows ENAMETOOLONG mitigation constants
-const CMD_BAT_RE = /\.(cmd|bat)$/i;
-const PROMPT_TEMP_FILE = () =>
-  '.od-prompt-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8) + '.md';
-const promptFileBootstrap = (fp) =>
-  `Your full instructions are stored in the file: ${fp.replace(/\\/g, '/')}. ` +
-  'Open that file first and follow every instruction in it exactly — ' +
-  'it contains the system prompt, design system, skill workflow, and user request. ' +
-  'Do not begin your response until you have read the entire file.';
 export const SSE_KEEPALIVE_INTERVAL_MS = 25_000;
 
 export function normalizeProjectDisplayStatus(status) {
   return status === 'starting' || status === 'queued' ? 'running' : status;
 }
 
-export function composeProjectDisplayStatus(baseStatus, awaitingInputProjects, projectId) {
-  if (baseStatus.value === 'succeeded' && awaitingInputProjects.has(projectId)) {
+export function composeProjectDisplayStatus(
+  baseStatus,
+  awaitingInputProjects,
+  projectId,
+) {
+  if (
+    baseStatus.value === 'succeeded' &&
+    awaitingInputProjects.has(projectId)
+  ) {
     return { ...baseStatus, value: 'awaiting_input' };
   }
   return {
@@ -240,7 +370,23 @@ export function createCompatApiErrorResponse(code, message, init = {}) {
  * @param {Omit<ApiError, 'code' | 'message'>} [init]
  */
 function sendApiError(res, status, code, message, init = {}) {
-  return res.status(status).json(createCompatApiErrorResponse(code, message, init));
+  return res
+    .status(status)
+    .json(createCompatApiErrorResponse(code, message, init));
+}
+
+// Filename slug for the Content-Disposition header on archive downloads.
+// Browsers reject quotes and control bytes; we keep Unicode letters/digits
+// so a project name with non-ASCII characters (e.g. "café-design")
+// survives instead of becoming a row of underscores.
+function sanitizeArchiveFilename(raw) {
+  const cleaned = String(raw ?? '')
+    .replace(/[\\/:*?"<>|]/g, '_')
+    .replace(/[\u0000-\u001f\u007f]/g, '')
+    .replace(/\s+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80);
+  return cleaned;
 }
 
 /**
@@ -262,7 +408,10 @@ const upload = multer({
     filename: (_req, file, cb) => {
       file.originalname = decodeMultipartFilename(file.originalname);
       const safe = sanitizeName(file.originalname);
-      cb(null, `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${safe}`);
+      cb(
+        null,
+        `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${safe}`,
+      );
     },
   }),
   limits: { fileSize: 20 * 1024 * 1024 },
@@ -274,7 +423,10 @@ const importUpload = multer({
     filename: (_req, file, cb) => {
       file.originalname = decodeMultipartFilename(file.originalname);
       const safe = sanitizeName(file.originalname);
-      cb(null, `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${safe}`);
+      cb(
+        null,
+        `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${safe}`,
+      );
     },
   }),
   limits: { fileSize: 100 * 1024 * 1024 },
@@ -305,7 +457,7 @@ const projectUpload = multer({
       cb(null, `${Date.now().toString(36)}-${safe}`);
     },
   }),
-  limits: { fileSize: 20 * 1024 * 1024 },
+  limits: { fileSize: 200 * 1024 * 1024 },  // 200MB — covers the largest design assets we expect (PPTX/PDF/raw images)
 });
 
 function handleProjectUpload(req, res, next) {
@@ -402,7 +554,10 @@ function notifyTaskWaiters(task) {
   }
 }
 
-export function createSseResponse(res, { keepAliveIntervalMs = SSE_KEEPALIVE_INTERVAL_MS } = {}) {
+export function createSseResponse(
+  res,
+  { keepAliveIntervalMs = SSE_KEEPALIVE_INTERVAL_MS } = {},
+) {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
@@ -454,7 +609,8 @@ export function createSseResponse(res, { keepAliveIntervalMs = SSE_KEEPALIVE_INT
   };
 }
 
-export async function startServer({ port = 7456, returnServer = false } = {}) {
+export async function startServer({ port = 7456, host = process.env.OD_BIND_HOST || '0.0.0.0', returnServer = false } = {}) {
+  let resolvedPort = port;
   const app = express();
   app.use(express.json({ limit: '4mb' }));
   const db = openDatabase(PROJECT_ROOT, { dataDir: RUNTIME_DATA_DIR });
@@ -472,8 +628,14 @@ export async function startServer({ port = 7456, returnServer = false } = {}) {
     app.use(express.static(STATIC_DIR));
   }
 
-  app.get('/api/health', (_req, res) => {
-    res.json({ ok: true, version: '0.1.0' });
+  app.get('/api/health', async (_req, res) => {
+    const versionInfo = await readCurrentAppVersionInfo();
+    res.json({ ok: true, version: versionInfo.version });
+  });
+
+  app.get('/api/version', async (_req, res) => {
+    const version = await readCurrentAppVersionInfo();
+    res.json({ version });
   });
 
   // ---- Projects (DB-backed) -------------------------------------------------
@@ -503,7 +665,8 @@ export async function startServer({ port = 7456, returnServer = false } = {}) {
         projects: listProjects(db).map((project) => ({
           ...project,
           status: composeProjectDisplayStatus(
-            activeRunStatuses.get(project.id) ?? latestRunStatuses.get(project.id) ?? { value: 'not_started' },
+            activeRunStatuses.get(project.id) ??
+              latestRunStatuses.get(project.id) ?? { value: 'not_started' },
             awaitingInputProjects,
             project.id,
           ),
@@ -567,7 +730,11 @@ export async function startServer({ port = 7456, returnServer = false } = {}) {
         if (tpl && Array.isArray(tpl.files) && tpl.files.length > 0) {
           await ensureProject(PROJECTS_DIR, id);
           for (const f of tpl.files) {
-            if (!f || typeof f.name !== 'string' || typeof f.content !== 'string') {
+            if (
+              !f ||
+              typeof f.name !== 'string' ||
+              typeof f.content !== 'string'
+            ) {
               continue;
             }
             try {
@@ -592,59 +759,70 @@ export async function startServer({ port = 7456, returnServer = false } = {}) {
     }
   });
 
-  app.post('/api/import/claude-design', importUpload.single('file'), async (req, res) => {
-    try {
-      if (!req.file) return res.status(400).json({ error: 'zip file required' });
-      const originalName = req.file.originalname || 'Claude Design export.zip';
-      if (!/\.zip$/i.test(originalName)) {
+  app.post(
+    '/api/import/claude-design',
+    importUpload.single('file'),
+    async (req, res) => {
+      try {
+        if (!req.file)
+          return res.status(400).json({ error: 'zip file required' });
+        const originalName =
+          req.file.originalname || 'Claude Design export.zip';
+        if (!/\.zip$/i.test(originalName)) {
+          fs.promises.unlink(req.file.path).catch(() => {});
+          return res.status(400).json({ error: 'expected a .zip file' });
+        }
+        const id = randomId();
+        const now = Date.now();
+        const baseName =
+          originalName.replace(/\.zip$/i, '').trim() || 'Claude Design import';
+        const imported = await importClaudeDesignZip(
+          req.file.path,
+          projectDir(PROJECTS_DIR, id),
+        );
         fs.promises.unlink(req.file.path).catch(() => {});
-        return res.status(400).json({ error: 'expected a .zip file' });
-      }
-      const id = randomId();
-      const now = Date.now();
-      const baseName = originalName.replace(/\.zip$/i, '').trim() || 'Claude Design import';
-      const imported = await importClaudeDesignZip(req.file.path, projectDir(PROJECTS_DIR, id));
-      fs.promises.unlink(req.file.path).catch(() => {});
 
-      const project = insertProject(db, {
-        id,
-        name: baseName,
-        skillId: null,
-        designSystemId: null,
-        pendingPrompt: `Imported from Claude Design ZIP: ${originalName}. Continue editing ${imported.entryFile}.`,
-        metadata: {
-          kind: 'prototype',
-          importedFrom: 'claude-design',
+        const project = insertProject(db, {
+          id,
+          name: baseName,
+          skillId: null,
+          designSystemId: null,
+          pendingPrompt: `Imported from Claude Design ZIP: ${originalName}. Continue editing ${imported.entryFile}.`,
+          metadata: {
+            kind: 'prototype',
+            importedFrom: 'claude-design',
+            entryFile: imported.entryFile,
+            sourceFileName: originalName,
+          },
+          createdAt: now,
+          updatedAt: now,
+        });
+        const cid = randomId();
+        insertConversation(db, {
+          id: cid,
+          projectId: id,
+          title: 'Imported Claude Design project',
+          createdAt: now,
+          updatedAt: now,
+        });
+        setTabs(db, id, [imported.entryFile], imported.entryFile);
+        res.json({
+          project,
+          conversationId: cid,
           entryFile: imported.entryFile,
-          sourceFileName: originalName,
-        },
-        createdAt: now,
-        updatedAt: now,
-      });
-      const cid = randomId();
-      insertConversation(db, {
-        id: cid,
-        projectId: id,
-        title: 'Imported Claude Design project',
-        createdAt: now,
-        updatedAt: now,
-      });
-      setTabs(db, id, [imported.entryFile], imported.entryFile);
-      res.json({
-        project,
-        conversationId: cid,
-        entryFile: imported.entryFile,
-        files: imported.files,
-      });
-    } catch (err) {
-      if (req.file?.path) fs.promises.unlink(req.file.path).catch(() => {});
-      res.status(400).json({ error: String(err) });
-    }
-  });
+          files: imported.files,
+        });
+      } catch (err) {
+        if (req.file?.path) fs.promises.unlink(req.file.path).catch(() => {});
+        res.status(400).json({ error: String(err) });
+      }
+    },
+  );
 
   app.get('/api/projects/:id', (req, res) => {
     const project = getProject(db, req.params.id);
-    if (!project) return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'not found');
+    if (!project)
+      return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'not found');
     /** @type {import('@open-design/contracts').ProjectResponse} */
     const body = { project };
     res.json(body);
@@ -654,7 +832,8 @@ export async function startServer({ port = 7456, returnServer = false } = {}) {
     try {
       const patch = req.body || {};
       const project = updateProject(db, req.params.id, patch);
-      if (!project) return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'not found');
+      if (!project)
+        return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'not found');
       /** @type {import('@open-design/contracts').ProjectResponse} */
       const body = { project };
       res.json(body);
@@ -720,32 +899,104 @@ export async function startServer({ port = 7456, returnServer = false } = {}) {
 
   // ---- Messages -------------------------------------------------------------
 
-  app.get(
-    '/api/projects/:id/conversations/:cid/messages',
+  app.get('/api/projects/:id/conversations/:cid/messages', (req, res) => {
+    const conv = getConversation(db, req.params.cid);
+    if (!conv || conv.projectId !== req.params.id) {
+      return res.status(404).json({ error: 'conversation not found' });
+    }
+    res.json({ messages: listMessages(db, req.params.cid) });
+  });
+
+  app.put('/api/projects/:id/conversations/:cid/messages/:mid', (req, res) => {
+    const conv = getConversation(db, req.params.cid);
+    if (!conv || conv.projectId !== req.params.id) {
+      return res.status(404).json({ error: 'conversation not found' });
+    }
+    const m = req.body || {};
+    if (m.id && m.id !== req.params.mid) {
+      return res.status(400).json({ error: 'id mismatch' });
+    }
+    const saved = upsertMessage(db, req.params.cid, {
+      ...m,
+      id: req.params.mid,
+    });
+    // Bump the parent project's updatedAt so the project list re-orders.
+    updateProject(db, req.params.id, {});
+    res.json({ message: saved });
+  });
+
+  // ---- Preview comments ----------------------------------------------------
+
+  app.get('/api/projects/:id/conversations/:cid/comments', (req, res) => {
+    const conv = getConversation(db, req.params.cid);
+    if (!conv || conv.projectId !== req.params.id) {
+      return res.status(404).json({ error: 'conversation not found' });
+    }
+    res.json({
+      comments: listPreviewComments(db, req.params.id, req.params.cid),
+    });
+  });
+
+  app.post('/api/projects/:id/conversations/:cid/comments', (req, res) => {
+    const conv = getConversation(db, req.params.cid);
+    if (!conv || conv.projectId !== req.params.id) {
+      return res.status(404).json({ error: 'conversation not found' });
+    }
+    try {
+      const comment = upsertPreviewComment(
+        db,
+        req.params.id,
+        req.params.cid,
+        req.body || {},
+      );
+      updateProject(db, req.params.id, {});
+      res.json({ comment });
+    } catch (err) {
+      res.status(400).json({ error: String(err?.message || err) });
+    }
+  });
+
+  app.patch(
+    '/api/projects/:id/conversations/:cid/comments/:commentId',
     (req, res) => {
       const conv = getConversation(db, req.params.cid);
       if (!conv || conv.projectId !== req.params.id) {
         return res.status(404).json({ error: 'conversation not found' });
       }
-      res.json({ messages: listMessages(db, req.params.cid) });
+      try {
+        const comment = updatePreviewCommentStatus(
+          db,
+          req.params.id,
+          req.params.cid,
+          req.params.commentId,
+          req.body?.status,
+        );
+        if (!comment)
+          return res.status(404).json({ error: 'comment not found' });
+        updateProject(db, req.params.id, {});
+        res.json({ comment });
+      } catch (err) {
+        res.status(400).json({ error: String(err?.message || err) });
+      }
     },
   );
 
-  app.put(
-    '/api/projects/:id/conversations/:cid/messages/:mid',
+  app.delete(
+    '/api/projects/:id/conversations/:cid/comments/:commentId',
     (req, res) => {
       const conv = getConversation(db, req.params.cid);
       if (!conv || conv.projectId !== req.params.id) {
         return res.status(404).json({ error: 'conversation not found' });
       }
-      const m = req.body || {};
-      if (m.id && m.id !== req.params.mid) {
-        return res.status(400).json({ error: 'id mismatch' });
-      }
-      const saved = upsertMessage(db, req.params.cid, { ...m, id: req.params.mid });
-      // Bump the parent project's updatedAt so the project list re-orders.
+      const ok = deletePreviewComment(
+        db,
+        req.params.id,
+        req.params.cid,
+        req.params.commentId,
+      );
+      if (!ok) return res.status(404).json({ error: 'comment not found' });
       updateProject(db, req.params.id, {});
-      res.json({ message: saved });
+      res.json({ ok: true });
     },
   );
 
@@ -810,10 +1061,18 @@ export async function startServer({ port = 7456, returnServer = false } = {}) {
       const files = await listFiles(PROJECTS_DIR, sourceProjectId);
       const snapshot = [];
       for (const f of files) {
-        if (f.kind !== 'html' && f.kind !== 'text' && f.kind !== 'code') continue;
-        const entry = await readProjectFile(PROJECTS_DIR, sourceProjectId, f.name);
+        if (f.kind !== 'html' && f.kind !== 'text' && f.kind !== 'code')
+          continue;
+        const entry = await readProjectFile(
+          PROJECTS_DIR,
+          sourceProjectId,
+          f.name,
+        );
         if (entry && Buffer.isBuffer(entry.buffer)) {
-          snapshot.push({ name: f.name, content: entry.buffer.toString('utf8') });
+          snapshot.push({
+            name: f.name,
+            content: entry.buffer.toString('utf8'),
+          });
         }
       }
       const t = insertTemplate(db, {
@@ -872,6 +1131,80 @@ export async function startServer({ port = 7456, returnServer = false } = {}) {
     }
   });
 
+  // Codex hatch-pet registry — pets packaged by the upstream `hatch-pet`
+  // skill under `${CODEX_HOME:-$HOME/.codex}/pets/`. Surfaced so the web
+  // pet settings can offer one-click adoption of recently-hatched pets.
+  app.get('/api/codex-pets', async (_req, res) => {
+    try {
+      const result = await listCodexPets({
+        baseUrl: '',
+        bundledRoot: BUNDLED_PETS_DIR,
+      });
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // One-click community sync. Hits the Codex Pet Share + j20 Hatchery
+  // catalogs and drops every pet into `${CODEX_HOME:-$HOME/.codex}/pets/`
+  // so `GET /api/codex-pets` (and the web Pet settings) pick them up
+  // immediately. The body is intentionally tiny — we keep the heavier
+  // tuning knobs (`--limit`, `--concurrency`) on the CLI script and
+  // only surface `force` + `source` here.
+  app.post('/api/codex-pets/sync', async (req, res) => {
+    try {
+      const body = req.body && typeof req.body === 'object' ? req.body : {};
+      const sourceRaw = typeof body.source === 'string' ? body.source : 'all';
+      const source =
+        sourceRaw === 'petshare' || sourceRaw === 'hatchery'
+          ? sourceRaw
+          : 'all';
+      const result = await syncCommunityPets({
+        source,
+        force: Boolean(body.force),
+      });
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: String((err && err.message) || err) });
+    }
+  });
+
+  app.get('/api/codex-pets/:id/spritesheet', async (req, res) => {
+    try {
+      const sheet = await readCodexPetSpritesheet(req.params.id, {
+        bundledRoot: BUNDLED_PETS_DIR,
+      });
+      if (!sheet) {
+        return res
+          .status(404)
+          .type('text/plain')
+          .send('codex pet spritesheet not found');
+      }
+      const mime =
+        sheet.ext === 'webp'
+          ? 'image/webp'
+          : sheet.ext === 'gif'
+            ? 'image/gif'
+            : 'image/png';
+      res.type(mime);
+      // Same-origin callers (the web app proxies `/api/*` through to
+      // the daemon, so PetSettings adoption fetches arrive same-origin)
+      // do not need any CORS header here. We only echo
+      // `Access-Control-Allow-Origin` for sandboxed iframes / data:
+      // URIs (Origin: null) which need it to draw the bytes onto a
+      // canvas without tainting. Local pet bytes should not be exposed
+      // to arbitrary third-party origins via a wildcard ACAO.
+      if (req.headers.origin === 'null') {
+        res.setHeader('Access-Control-Allow-Origin', 'null');
+      }
+      res.setHeader('Cache-Control', 'no-store');
+      res.sendFile(sheet.absPath);
+    } catch (err) {
+      res.status(500).type('text/plain').send(String(err));
+    }
+  });
+
   app.get('/api/design-systems', async (_req, res) => {
     try {
       const systems = await listDesignSystems(DESIGN_SYSTEMS_DIR);
@@ -886,7 +1219,8 @@ export async function startServer({ port = 7456, returnServer = false } = {}) {
   app.get('/api/design-systems/:id', async (req, res) => {
     try {
       const body = await readDesignSystem(DESIGN_SYSTEMS_DIR, req.params.id);
-      if (body === null) return res.status(404).json({ error: 'design system not found' });
+      if (body === null)
+        return res.status(404).json({ error: 'design system not found' });
       res.json({ id: req.params.id, body });
     } catch (err) {
       res.status(500).json({ error: String(err) });
@@ -911,7 +1245,8 @@ export async function startServer({ port = 7456, returnServer = false } = {}) {
         req.params.surface,
         req.params.id,
       );
-      if (!tpl) return res.status(404).json({ error: 'prompt template not found' });
+      if (!tpl)
+        return res.status(404).json({ error: 'prompt template not found' });
       res.json({ promptTemplate: tpl });
     } catch (err) {
       res.status(500).json({ error: String(err) });
@@ -925,7 +1260,8 @@ export async function startServer({ port = 7456, returnServer = false } = {}) {
   app.get('/api/design-systems/:id/preview', async (req, res) => {
     try {
       const body = await readDesignSystem(DESIGN_SYSTEMS_DIR, req.params.id);
-      if (body === null) return res.status(404).type('text/plain').send('not found');
+      if (body === null)
+        return res.status(404).type('text/plain').send('not found');
       const html = renderDesignSystemPreview(req.params.id, body);
       res.type('text/html').send(html);
     } catch (err) {
@@ -939,7 +1275,8 @@ export async function startServer({ port = 7456, returnServer = false } = {}) {
   app.get('/api/design-systems/:id/showcase', async (req, res) => {
     try {
       const body = await readDesignSystem(DESIGN_SYSTEMS_DIR, req.params.id);
-      if (body === null) return res.status(404).type('text/plain').send('not found');
+      if (body === null)
+        return res.status(404).type('text/plain').send('not found');
       const html = renderDesignSystemShowcase(req.params.id, body);
       res.type('text/html').send(html);
     } catch (err) {
@@ -999,7 +1336,9 @@ export async function startServer({ port = 7456, returnServer = false } = {}) {
       res
         .status(404)
         .type('text/plain')
-        .send('no example.html, assets/template.html, or assets/index.html for this skill');
+        .send(
+          'no example.html, assets/template.html, or assets/index.html for this skill',
+        );
     } catch (err) {
       res.status(500).type('text/plain').send(String(err));
     }
@@ -1099,14 +1438,23 @@ export async function startServer({ port = 7456, returnServer = false } = {}) {
     try {
       const { fileName, providerId = VERCEL_PROVIDER_ID } = req.body || {};
       if (providerId !== VERCEL_PROVIDER_ID) {
-        return sendApiError(res, 400, 'BAD_REQUEST', 'unsupported deploy provider');
+        return sendApiError(
+          res,
+          400,
+          'BAD_REQUEST',
+          'unsupported deploy provider',
+        );
       }
       if (typeof fileName !== 'string' || !fileName.trim()) {
         return sendApiError(res, 400, 'BAD_REQUEST', 'fileName required');
       }
 
       const prior = getDeployment(db, req.params.id, fileName, providerId);
-      const files = await buildDeployFileSet(PROJECTS_DIR, req.params.id, fileName);
+      const files = await buildDeployFileSet(
+        PROJECTS_DIR,
+        req.params.id,
+        fileName,
+      );
       const result = await deployToVercel({
         config: await readVercelConfig(),
         files,
@@ -1132,34 +1480,95 @@ export async function startServer({ port = 7456, returnServer = false } = {}) {
       res.json(body);
     } catch (err) {
       const status = err instanceof DeployError ? err.status : 400;
-      const init = err instanceof DeployError && err.details ? { details: err.details } : {};
-      sendApiError(res, status, status === 404 ? 'FILE_NOT_FOUND' : 'BAD_REQUEST', String(err?.message || err), init);
+      const init =
+        err instanceof DeployError && err.details
+          ? { details: err.details }
+          : {};
+      sendApiError(
+        res,
+        status,
+        status === 404 ? 'FILE_NOT_FOUND' : 'BAD_REQUEST',
+        String(err?.message || err),
+        init,
+      );
     }
   });
 
-  app.post('/api/projects/:id/deployments/:deploymentId/check-link', async (req, res) => {
+  app.post('/api/projects/:id/deploy/preflight', async (req, res) => {
     try {
-      const existing = getDeploymentById(db, req.params.id, req.params.deploymentId);
-      if (!existing) {
-        return sendApiError(res, 404, 'FILE_NOT_FOUND', 'deployment not found');
+      const { fileName, providerId = VERCEL_PROVIDER_ID } = req.body || {};
+      if (providerId !== VERCEL_PROVIDER_ID) {
+        return sendApiError(
+          res,
+          400,
+          'BAD_REQUEST',
+          'unsupported deploy provider',
+        );
       }
-      const result = await checkDeploymentUrl(existing.url);
-      const now = Date.now();
-      /** @type {import('@open-design/contracts').CheckDeploymentLinkResponse} */
-      const body = upsertDeployment(db, {
-        ...existing,
-        status: result.reachable ? 'ready' : (result.status || 'link-delayed'),
-        statusMessage: result.reachable
-          ? 'Public link is ready.'
-          : (result.statusMessage || 'Vercel is still preparing the public link.'),
-        reachableAt: result.reachable ? now : existing.reachableAt,
-        updatedAt: now,
-      });
+      if (typeof fileName !== 'string' || !fileName.trim()) {
+        return sendApiError(res, 400, 'BAD_REQUEST', 'fileName required');
+      }
+      /** @type {import('@open-design/contracts').DeployPreflightResponse} */
+      const body = await prepareDeployPreflight(
+        PROJECTS_DIR,
+        req.params.id,
+        fileName,
+      );
       res.json(body);
     } catch (err) {
-      sendApiError(res, 400, 'BAD_REQUEST', String(err?.message || err));
+      // DeployError is a known/expected outcome (validation, missing file).
+      // Anything else points at a bug or an unexpected runtime state, so
+      // surface it in the daemon log without leaking internals to the
+      // client which still gets a generic 400.
+      if (!(err instanceof DeployError)) {
+        console.error('[deploy/preflight]', err);
+      }
+      const status = err instanceof DeployError ? err.status : 400;
+      sendApiError(
+        res,
+        status,
+        status === 404 ? 'FILE_NOT_FOUND' : 'BAD_REQUEST',
+        String(err?.message || err),
+      );
     }
   });
+
+  app.post(
+    '/api/projects/:id/deployments/:deploymentId/check-link',
+    async (req, res) => {
+      try {
+        const existing = getDeploymentById(
+          db,
+          req.params.id,
+          req.params.deploymentId,
+        );
+        if (!existing) {
+          return sendApiError(
+            res,
+            404,
+            'FILE_NOT_FOUND',
+            'deployment not found',
+          );
+        }
+        const result = await checkDeploymentUrl(existing.url);
+        const now = Date.now();
+        /** @type {import('@open-design/contracts').CheckDeploymentLinkResponse} */
+        const body = upsertDeployment(db, {
+          ...existing,
+          status: result.reachable ? 'ready' : result.status || 'link-delayed',
+          statusMessage: result.reachable
+            ? 'Public link is ready.'
+            : result.statusMessage ||
+              'Vercel is still preparing the public link.',
+          reachableAt: result.reachable ? now : existing.reachableAt,
+          updatedAt: now,
+        });
+        res.json(body);
+      } catch (err) {
+        sendApiError(res, 400, 'BAD_REQUEST', String(err?.message || err));
+      }
+    },
+  );
 
   // Shared device frames (iPhone, Android, iPad, MacBook, browser chrome).
   // Skills can compose multi-screen / multi-device layouts by pointing at
@@ -1182,14 +1591,78 @@ export async function startServer({ port = 7456, returnServer = false } = {}) {
     }
   });
 
+  // Streams a ZIP of the project's on-disk tree so the "Download as .zip"
+  // share menu can hand the user the actual files they uploaded — e.g. the
+  // imported `ui-design/` folder — instead of a one-file snapshot of the
+  // rendered HTML. `root` scopes the archive to a subdirectory; without
+  // it, the whole project is packed.
+  app.get('/api/projects/:id/archive', async (req, res) => {
+    try {
+      const root = typeof req.query?.root === 'string' ? req.query.root : '';
+      const { buffer, baseName } = await buildProjectArchive(
+        PROJECTS_DIR,
+        req.params.id,
+        root,
+      );
+      const project = getProject(db, req.params.id);
+      const fallbackName = project?.name || req.params.id;
+      const fileSlug = sanitizeArchiveFilename(baseName || fallbackName) || 'project';
+      const filename = `${fileSlug}.zip`;
+      // RFC 5987 dance: legacy `filename=` carries an ASCII fallback, while
+      // `filename*=UTF-8''…` lets modern browsers pick up project names
+      // with non-ASCII characters (accents, CJK, etc.) without mojibake.
+      const asciiFallback =
+        filename.replace(/[^\x20-\x7e]/g, '_').replace(/"/g, '_') || 'project.zip';
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="${asciiFallback}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+      );
+      res.send(buffer);
+    } catch (err) {
+      const code = err && err.code;
+      const status = code === 'ENOENT' || code === 'ENOTDIR' ? 404 : 400;
+      sendApiError(
+        res,
+        status,
+        status === 404 ? 'FILE_NOT_FOUND' : 'BAD_REQUEST',
+        String(err?.message || err),
+      );
+    }
+  });
+
+  // Preflight for the raw file route. Current artifact fetches are simple GETs
+  // (no preflight needed), but an explicit handler future-proofs the route if
+  // artifacts ever add custom request headers.
+  app.options('/api/projects/:id/raw/*', (req, res) => {
+    if (req.headers.origin === 'null') {
+      res.header('Access-Control-Allow-Origin', '*');
+      res.header('Access-Control-Allow-Methods', 'GET');
+      res.header('Access-Control-Allow-Headers', 'Content-Type');
+    }
+    res.sendStatus(204);
+  });
+
   app.get('/api/projects/:id/raw/*', async (req, res) => {
     try {
       const relPath = req.params[0];
       const file = await readProjectFile(PROJECTS_DIR, req.params.id, relPath);
+      // PreviewModal loads artifact HTML via srcdoc, giving the iframe Origin: "null".
+      // data: URIs, file://, and some sandboxed iframes also send null — all are
+      // local-only callers, so this is safe. Real cross-origin sites send a real
+      // origin and remain blocked by the browser's same-origin policy.
+      if (req.headers.origin === 'null') {
+        res.header('Access-Control-Allow-Origin', '*');
+      }
       res.type(file.mime).send(file.buffer);
     } catch (err) {
       const status = err && err.code === 'ENOENT' ? 404 : 400;
-      sendApiError(res, status, status === 404 ? 'FILE_NOT_FOUND' : 'BAD_REQUEST', String(err));
+      sendApiError(
+        res,
+        status,
+        status === 404 ? 'FILE_NOT_FOUND' : 'BAD_REQUEST',
+        String(err),
+      );
     }
   });
 
@@ -1201,28 +1674,56 @@ export async function startServer({ port = 7456, returnServer = false } = {}) {
       res.json(body);
     } catch (err) {
       const status = err && err.code === 'ENOENT' ? 404 : 400;
-      sendApiError(res, status, status === 404 ? 'FILE_NOT_FOUND' : 'BAD_REQUEST', String(err));
+      sendApiError(
+        res,
+        status,
+        status === 404 ? 'FILE_NOT_FOUND' : 'BAD_REQUEST',
+        String(err),
+      );
     }
   });
 
   app.get('/api/projects/:id/files/:name/preview', async (req, res) => {
     try {
-      const file = await readProjectFile(PROJECTS_DIR, req.params.id, req.params.name);
+      const file = await readProjectFile(
+        PROJECTS_DIR,
+        req.params.id,
+        req.params.name,
+      );
       const preview = await buildDocumentPreview(file);
       res.json(preview);
     } catch (err) {
-      const status = err && err.statusCode ? err.statusCode : err && err.code === 'ENOENT' ? 404 : 400;
-      sendApiError(res, status, status === 404 ? 'FILE_NOT_FOUND' : 'BAD_REQUEST', err?.message || 'preview unavailable');
+      const status =
+        err && err.statusCode
+          ? err.statusCode
+          : err && err.code === 'ENOENT'
+            ? 404
+            : 400;
+      sendApiError(
+        res,
+        status,
+        status === 404 ? 'FILE_NOT_FOUND' : 'BAD_REQUEST',
+        err?.message || 'preview unavailable',
+      );
     }
   });
 
   app.get('/api/projects/:id/files/:name', async (req, res) => {
     try {
-      const file = await readProjectFile(PROJECTS_DIR, req.params.id, req.params.name);
+      const file = await readProjectFile(
+        PROJECTS_DIR,
+        req.params.id,
+        req.params.name,
+      );
       res.type(file.mime).send(file.buffer);
     } catch (err) {
       const status = err && err.code === 'ENOENT' ? 404 : 400;
-      sendApiError(res, status, status === 404 ? 'FILE_NOT_FOUND' : 'BAD_REQUEST', String(err));
+      sendApiError(
+        res,
+        status,
+        status === 404 ? 'FILE_NOT_FOUND' : 'BAD_REQUEST',
+        String(err),
+      );
     }
   });
 
@@ -1242,7 +1743,9 @@ export async function startServer({ port = 7456, returnServer = false } = {}) {
         await ensureProject(PROJECTS_DIR, req.params.id);
         if (req.file) {
           const buf = await fs.promises.readFile(req.file.path);
-          const desiredName = sanitizeName(req.body?.name || req.file.originalname);
+          const desiredName = sanitizeName(
+            req.body?.name || req.file.originalname,
+          );
           const meta = await writeProjectFile(
             PROJECTS_DIR,
             req.params.id,
@@ -1256,21 +1759,40 @@ export async function startServer({ port = 7456, returnServer = false } = {}) {
         }
         const { name, content, encoding, artifactManifest } = req.body || {};
         if (typeof name !== 'string' || typeof content !== 'string') {
-          return sendApiError(res, 400, 'BAD_REQUEST', 'name and content required');
+          return sendApiError(
+            res,
+            400,
+            'BAD_REQUEST',
+            'name and content required',
+          );
         }
         if (artifactManifest !== undefined && artifactManifest !== null) {
-          const validated = validateArtifactManifestInput(artifactManifest, name);
+          const validated = validateArtifactManifestInput(
+            artifactManifest,
+            name,
+          );
           if (!validated.ok) {
-            return sendApiError(res, 400, 'BAD_REQUEST', `invalid artifactManifest: ${validated.error}`);
+            return sendApiError(
+              res,
+              400,
+              'BAD_REQUEST',
+              `invalid artifactManifest: ${validated.error}`,
+            );
           }
         }
         const buf =
           encoding === 'base64'
             ? Buffer.from(content, 'base64')
             : Buffer.from(content, 'utf8');
-        const meta = await writeProjectFile(PROJECTS_DIR, req.params.id, name, buf, {
-          artifactManifest,
-        });
+        const meta = await writeProjectFile(
+          PROJECTS_DIR,
+          req.params.id,
+          name,
+          buf,
+          {
+            artifactManifest,
+          },
+        );
         /** @type {import('@open-design/contracts').ProjectFileResponse} */
         const body = { file: meta };
         res.json(body);
@@ -1288,7 +1810,12 @@ export async function startServer({ port = 7456, returnServer = false } = {}) {
       res.json(body);
     } catch (err) {
       const status = err && err.code === 'ENOENT' ? 404 : 400;
-      sendApiError(res, status, status === 404 ? 'FILE_NOT_FOUND' : 'BAD_REQUEST', String(err));
+      sendApiError(
+        res,
+        status,
+        status === 404 ? 'FILE_NOT_FOUND' : 'BAD_REQUEST',
+        String(err),
+      );
     }
   });
 
@@ -1309,7 +1836,9 @@ export async function startServer({ port = 7456, returnServer = false } = {}) {
       const cfg = await readMaskedConfig(PROJECT_ROOT);
       res.json(cfg);
     } catch (err) {
-      res.status(500).json({ error: String(err && err.message ? err.message : err) });
+      res
+        .status(500)
+        .json({ error: String(err && err.message ? err.message : err) });
     }
   });
 
@@ -1319,14 +1848,45 @@ export async function startServer({ port = 7456, returnServer = false } = {}) {
       res.json(cfg);
     } catch (err) {
       const status = typeof err?.status === 'number' ? err.status : 400;
-      res.status(status).json({ error: String(err && err.message ? err.message : err) });
+      res
+        .status(status)
+        .json({ error: String(err && err.message ? err.message : err) });
+    }
+  });
+
+  app.get('/api/app-config', async (req, res) => {
+    if (!isLocalSameOrigin(req, resolvedPort)) {
+      return res.status(403).json({ error: 'cross-origin request rejected' });
+    }
+    try {
+      const config = await readAppConfig(RUNTIME_DATA_DIR);
+      res.json({ config });
+    } catch (err) {
+      res
+        .status(500)
+        .json({ error: String(err && err.message ? err.message : err) });
+    }
+  });
+
+  app.put('/api/app-config', async (req, res) => {
+    if (!isLocalSameOrigin(req, resolvedPort)) {
+      return res.status(403).json({ error: 'cross-origin request rejected' });
+    }
+    try {
+      const config = await writeAppConfig(RUNTIME_DATA_DIR, req.body);
+      res.json({ config });
+    } catch (err) {
+      res
+        .status(500)
+        .json({ error: String(err && err.message ? err.message : err) });
     }
   });
 
   app.post('/api/projects/:id/media/generate', async (req, res) => {
-    if (!isLocalSameOrigin(req, port)) {
+    if (!isLocalSameOrigin(req, resolvedPort)) {
       return res.status(403).json({
-        error: 'cross-origin request rejected: media generation is restricted to the local UI / CLI',
+        error:
+          'cross-origin request rejected: media generation is restricted to the local UI / CLI',
       });
     }
 
@@ -1357,9 +1917,12 @@ export async function startServer({ port = 7456, returnServer = false } = {}) {
         prompt: req.body?.prompt,
         output: req.body?.output,
         aspect: req.body?.aspect,
-        length: typeof req.body?.length === 'number' ? req.body.length : undefined,
+        length:
+          typeof req.body?.length === 'number' ? req.body.length : undefined,
         duration:
-          typeof req.body?.duration === 'number' ? req.body.duration : undefined,
+          typeof req.body?.duration === 'number'
+            ? req.body.duration
+            : undefined,
         voice: req.body?.voice,
         audioKind: req.body?.audioKind,
         compositionDir: req.body?.compositionDir,
@@ -1406,7 +1969,7 @@ export async function startServer({ port = 7456, returnServer = false } = {}) {
   });
 
   app.post('/api/media/tasks/:id/wait', async (req, res) => {
-    if (!isLocalSameOrigin(req, port)) {
+    if (!isLocalSameOrigin(req, resolvedPort)) {
       return res.status(403).json({ error: 'cross-origin request rejected' });
     }
     const taskId = req.params.id;
@@ -1456,7 +2019,7 @@ export async function startServer({ port = 7456, returnServer = false } = {}) {
   });
 
   app.get('/api/projects/:id/media/tasks', (req, res) => {
-    if (!isLocalSameOrigin(req, port)) {
+    if (!isLocalSameOrigin(req, resolvedPort)) {
       return res.status(403).json({ error: 'cross-origin request rejected' });
     }
     const projectId = req.params.id;
@@ -1523,21 +2086,47 @@ export async function startServer({ port = 7456, returnServer = false } = {}) {
     runs: createChatRunService({ createSseResponse, createSseErrorPayload }),
   };
 
-  const composeDaemonSystemPrompt = async ({ projectId, skillId, designSystemId }) => {
-    const project = typeof projectId === 'string' && projectId ? getProject(db, projectId) : null;
-    const effectiveSkillId = typeof skillId === 'string' && skillId ? skillId : project?.skillId;
-    const effectiveDesignSystemId = typeof designSystemId === 'string' && designSystemId ? designSystemId : project?.designSystemId;
+  const composeDaemonSystemPrompt = async ({
+    projectId,
+    skillId,
+    designSystemId,
+  }) => {
+    const project =
+      typeof projectId === 'string' && projectId
+        ? getProject(db, projectId)
+        : null;
+    const effectiveSkillId =
+      typeof skillId === 'string' && skillId ? skillId : project?.skillId;
+    const effectiveDesignSystemId =
+      typeof designSystemId === 'string' && designSystemId
+        ? designSystemId
+        : project?.designSystemId;
     const metadata = project?.metadata;
 
     let skillBody;
     let skillName;
     let skillMode;
+    let skillCraftRequires = [];
     if (effectiveSkillId) {
-      const skill = (await listSkills(SKILLS_DIR)).find((s) => s.id === effectiveSkillId);
+      const skill = (await listSkills(SKILLS_DIR)).find(
+        (s) => s.id === effectiveSkillId,
+      );
       if (skill) {
         skillBody = skill.body;
         skillName = skill.name;
         skillMode = skill.mode;
+        if (Array.isArray(skill.craftRequires))
+          skillCraftRequires = skill.craftRequires;
+      }
+    }
+
+    let craftBody;
+    let craftSections;
+    if (skillCraftRequires.length > 0) {
+      const loaded = await loadCraftSections(CRAFT_DIR, skillCraftRequires);
+      if (loaded.body) {
+        craftBody = loaded.body;
+        craftSections = loaded.sections;
       }
     }
 
@@ -1547,12 +2136,15 @@ export async function startServer({ port = 7456, returnServer = false } = {}) {
       const systems = await listDesignSystems(DESIGN_SYSTEMS_DIR);
       const summary = systems.find((s) => s.id === effectiveDesignSystemId);
       designSystemTitle = summary?.title;
-      designSystemBody = await readDesignSystem(DESIGN_SYSTEMS_DIR, effectiveDesignSystemId) ?? undefined;
+      designSystemBody =
+        (await readDesignSystem(DESIGN_SYSTEMS_DIR, effectiveDesignSystemId)) ??
+        undefined;
     }
 
-    const template = metadata?.kind === 'template' && typeof metadata.templateId === 'string'
-      ? getTemplate(db, metadata.templateId) ?? undefined
-      : undefined;
+    const template =
+      metadata?.kind === 'template' && typeof metadata.templateId === 'string'
+        ? (getTemplate(db, metadata.templateId) ?? undefined)
+        : undefined;
 
     return composeSystemPrompt({
       skillBody,
@@ -1560,6 +2152,8 @@ export async function startServer({ port = 7456, returnServer = false } = {}) {
       skillMode,
       designSystemBody,
       designSystemTitle,
+      craftBody,
+      craftSections,
       metadata,
       template,
     });
@@ -1580,18 +2174,33 @@ export async function startServer({ port = 7456, returnServer = false } = {}) {
       skillId,
       designSystemId,
       attachments = [],
+      commentAttachments = [],
       model,
       reasoning,
     } = chatBody;
     if (typeof projectId === 'string' && projectId) run.projectId = projectId;
-    if (typeof conversationId === 'string' && conversationId) run.conversationId = conversationId;
-    if (typeof assistantMessageId === 'string' && assistantMessageId) run.assistantMessageId = assistantMessageId;
-    if (typeof clientRequestId === 'string' && clientRequestId) run.clientRequestId = clientRequestId;
+    if (typeof conversationId === 'string' && conversationId)
+      run.conversationId = conversationId;
+    if (typeof assistantMessageId === 'string' && assistantMessageId)
+      run.assistantMessageId = assistantMessageId;
+    if (typeof clientRequestId === 'string' && clientRequestId)
+      run.clientRequestId = clientRequestId;
     if (typeof agentId === 'string' && agentId) run.agentId = agentId;
     const def = getAgentDef(agentId);
-    if (!def) return design.runs.fail(run, 'AGENT_UNAVAILABLE', `unknown agent: ${agentId}`);
-    if (!def.bin) return design.runs.fail(run, 'AGENT_UNAVAILABLE', 'agent has no binary');
-    if (typeof message !== 'string' || !message.trim()) {
+    if (!def)
+      return design.runs.fail(
+        run,
+        'AGENT_UNAVAILABLE',
+        `unknown agent: ${agentId}`,
+      );
+    if (!def.bin)
+      return design.runs.fail(run, 'AGENT_UNAVAILABLE', 'agent has no binary');
+    const safeCommentAttachments =
+      normalizeCommentAttachments(commentAttachments);
+    if (
+      (typeof message !== 'string' || !message.trim()) &&
+      safeCommentAttachments.length === 0
+    ) {
       return design.runs.fail(run, 'BAD_REQUEST', 'message required');
     }
     if (run.cancelRequested || design.runs.isTerminal(run.status)) return;
@@ -1615,7 +2224,9 @@ export async function startServer({ port = 7456, returnServer = false } = {}) {
     // Sanitise supplied image paths: must live under UPLOAD_DIR.
     const safeImages = imagePaths.filter((p) => {
       const resolved = path.resolve(p);
-      return resolved.startsWith(UPLOAD_DIR + path.sep) && fs.existsSync(resolved);
+      return (
+        resolved.startsWith(UPLOAD_DIR + path.sep) && fs.existsSync(resolved)
+      );
     });
 
     // Project-scoped attachments: project-relative paths inside cwd. Each
@@ -1625,18 +2236,18 @@ export async function startServer({ port = 7456, returnServer = false } = {}) {
     // to Read it.
     const safeAttachments = cwd
       ? (Array.isArray(attachments) ? attachments : [])
-        .filter((p) => typeof p === 'string' && p.length > 0)
-        .filter((p) => {
-          try {
-            const abs = path.resolve(cwd, p);
-            return (
-              (abs === cwd || abs.startsWith(cwd + path.sep)) &&
-              fs.existsSync(abs)
-            );
-          } catch {
-            return false;
-          }
-        })
+          .filter((p) => typeof p === 'string' && p.length > 0)
+          .filter((p) => {
+            try {
+              const abs = path.resolve(cwd, p);
+              return (
+                (abs === cwd || abs.startsWith(cwd + path.sep)) &&
+                fs.existsSync(abs)
+              );
+            } catch {
+              return false;
+            }
+          })
       : [];
 
     // Local code agents don't accept a separate "system" channel the way the
@@ -1658,7 +2269,12 @@ export async function startServer({ port = 7456, returnServer = false } = {}) {
     const attachmentHint = safeAttachments.length
       ? `\n\nAttached project files: ${safeAttachments.map((p) => `\`${p}\``).join(', ')}`
       : '';
-    const daemonSystemPrompt = await composeDaemonSystemPrompt({ projectId, skillId, designSystemId });
+    const commentHint = renderCommentAttachmentHint(safeCommentAttachments);
+    const daemonSystemPrompt = await composeDaemonSystemPrompt({
+      projectId,
+      skillId,
+      designSystemId,
+    });
     const instructionPrompt = [daemonSystemPrompt, systemPrompt]
       .map((part) => (typeof part === 'string' ? part.trim() : ''))
       .filter(Boolean)
@@ -1669,8 +2285,10 @@ export async function startServer({ port = 7456, returnServer = false } = {}) {
         : cwdHint
           ? `# Instructions${cwdHint}\n\n---\n`
           : '',
-      `# User request\n\n${message}${attachmentHint}`,
-      safeImages.length ? `\n\n${safeImages.map((p) => `@${p}`).join(' ')}` : '',
+      `# User request\n\n${message || '(No extra typed instruction.)'}${attachmentHint}${commentHint}`,
+      safeImages.length
+        ? `\n\n${safeImages.map((p) => `@${p}`).join(' ')}`
+        : '',
     ].join('');
 
     // Skill seeds (`skills/<id>/assets/template.html`) and design-system
@@ -1680,8 +2298,8 @@ export async function startServer({ port = 7456, returnServer = false } = {}) {
     // Claude Code blocks those reads (issue #6: "no permission to read
     // skills template"). We surface both roots so any agent that honours
     // `--add-dir` can resolve those side files.
-    const extraAllowedDirs = [SKILLS_DIR, DESIGN_SYSTEMS_DIR].filter(
-      (d) => fs.existsSync(d),
+    const extraAllowedDirs = [SKILLS_DIR, DESIGN_SYSTEMS_DIR].filter((d) =>
+      fs.existsSync(d),
     );
     // Per-agent model + reasoning the user picked in the model menu.
     // Trust the value when it matches the most recent /api/agents listing
@@ -1696,107 +2314,42 @@ export async function startServer({ port = 7456, returnServer = false } = {}) {
         : null;
     const safeReasoning =
       typeof reasoning === 'string' && Array.isArray(def.reasoningOptions)
-        ? def.reasoningOptions.find((r) => r.id === reasoning)?.id ?? null
+        ? (def.reasoningOptions.find((r) => r.id === reasoning)?.id ?? null)
         : null;
     const agentOptions = { model: safeModel, reasoning: safeReasoning };
 
-    // Windows ENAMETOOLONG mitigation.  On Windows the OS caps the command
-    // line passed to child_process.spawn: ~8 191 chars when shell:true is
-    // needed (.cmd/.bat npm shims) and ~32 767 chars otherwise (CreateProcess).
-    // The composed prompt (system prompt + design system + skill body + user
-    // message) can exceed either limit.  Agents with `promptViaStdin` bypass
-    // this by piping through stdin.  For the remaining agents we write the
-    // prompt to a temp file in the project directory and pass a short
-    // bootstrap message that tells the agent to Read it before responding.
     const resolvedBin = resolveAgentBin(agentId);
-    const isWinShell = process.platform === 'win32' && resolvedBin && CMD_BAT_RE.test(resolvedBin);
-    // Thresholds account for escaping overhead (~1.1-1.3x for cmd.exe shell)
-    // plus other args (~500 chars).  6500 chars for shell:true, 30000 for
-    // direct CreateProcess.
-    const promptLimit = isWinShell ? 6500 : 30000;
-    const needsFilePrompt =
-      !def.promptViaStdin &&
-      process.platform === 'win32' &&
-      composed.length > promptLimit &&
-      cwd;
-    if (process.platform === 'win32') {
-      console.log(
-        `[od] prompt-delivery: agent=${agentId} promptLen=${composed.length} ` +
-        `shell=${isWinShell} limit=${promptLimit} file=${!!needsFilePrompt} ` +
-        `bin=${resolvedBin ? path.basename(resolvedBin) : 'null'}`,
-      );
-    }
-    let effectivePrompt = composed;
-    let promptFilePath = null;
-    let promptFileCleaned = false;
-    const cleanPromptFile = () => {
-      if (promptFilePath && !promptFileCleaned) {
-        promptFileCleaned = true;
-        fs.unlink(promptFilePath, () => {});
-      }
-    };
-    // ^^^ idempotency: promptFileCleaned is set synchronously BEFORE the
-    // async fs.unlink callback, so a second call never races past the guard.
-    if (needsFilePrompt) {
-      promptFilePath = path.join(cwd, PROMPT_TEMP_FILE());
-      try {
-        fs.writeFileSync(promptFilePath, composed, 'utf8');
-        effectivePrompt = promptFileBootstrap(promptFilePath);
-        console.log(`[od] wrote prompt to ${promptFilePath}`);
-      } catch (err) {
-        console.error(`[od] failed to write prompt file: ${err.message}`);
-        promptFilePath = null;
-      }
-    }
 
-    run.promptFileCleaned = cleanPromptFile;
-    const args = def.buildArgs(effectivePrompt, safeImages, extraAllowedDirs, agentOptions, { cwd });
-    const send = (event, data) => design.runs.emit(run, event, data);
-
-    // resolvedBin was already looked up above for the ENAMETOOLONG check.
     // If detection can't find the binary, surface a friendly SSE error
     // pointing at /api/agents instead of silently falling back to
     // spawn(def.bin) — that fallback re-introduces the exact ENOENT symptom
-    // from issue #10 the rest of this block is meant to prevent.
+    // from issue #10.
     if (!resolvedBin) {
-      cleanPromptFile();
-      design.runs.emit(run, 'error', createSseErrorPayload(
-        'AGENT_UNAVAILABLE',
-        `Agent "${def.name}" (\`${def.bin}\`) is not installed or not on PATH. ` +
-          'Install it and refresh the agent list (GET /api/agents) before retrying.',
-        { retryable: true },
-      ));
+      design.runs.emit(
+        run,
+        'error',
+        createSseErrorPayload(
+          'AGENT_UNAVAILABLE',
+          `Agent "${def.name}" (\`${def.bin}\`) is not installed or not on PATH. ` +
+            'Install it and refresh the agent list (GET /api/agents) before retrying.',
+          { retryable: true },
+        ),
+      );
       return design.runs.finish(run, 'failed', 1, null);
     }
-    // npm shims on Windows are .cmd/.bat files; Node ≥21 refuses to spawn
-    // those without `shell: true` (CVE-2024-27980). When `shell: true` is set
-    // on Windows, Node escapes argv items for the cmd.exe shell — that
-    // escape is what currently keeps user-controlled prompt text in `args`
-    // (composed via `def.buildArgs(prompt, ...)` above) from being
-    // interpreted as shell metacharacters. Two caveats this leaves on the
-    // table for a future contributor to be aware of:
-    //   1. Defensibility relies on Node's escaper staying correct. The
-    //      stronger fix is to keep user text out of argv entirely by piping
-    //      the composed prompt through child stdin instead of passing it
-    //      as a `-p $prompt`-style flag. Do NOT add a new prompt-bearing
-    //      flag in `buildArgs` thinking shell:true makes it safe — route
-    //      it through stdin instead.
-    //   2. cmd.exe caps the full command line at ~8191 chars (well below
-    //      Node's direct-spawn argv cap), so long prompts can fail with an
-    //      ENAMETOOLONG-class error here. Same mitigation: stdin.
-    //
-    // We only flip shell:true for `.cmd`/`.bat` because those are the only
-    // PATHEXT entries that strictly require cmd.exe to launch. `.exe`/`.com`
-    // launch directly (no shell needed); `.ps1`/`.vbs` etc. would need a
-    // different host (powershell / wscript) — `shell: true` (which uses
-    // cmd.exe) wouldn't actually help those, so we don't pretend it would.
-    // In practice npm-installed CLIs ship as `.cmd` shims, which is the
-    // case this branch covers.
-    const useShell =
-      process.platform === 'win32' && CMD_BAT_RE.test(resolvedBin);
+
+    const args = def.buildArgs(
+      composed,
+      safeImages,
+      extraAllowedDirs,
+      agentOptions,
+      { cwd },
+    );
+    const send = (event, data) => design.runs.emit(run, event, data);
+
     const odMediaEnv = {
       OD_BIN,
-      OD_DAEMON_URL: `http://127.0.0.1:${port}`,
+      OD_DAEMON_URL: `http://127.0.0.1:${resolvedPort}`,
       ...(typeof projectId === 'string' && projectId && cwd
         ? {
             OD_PROJECT_ID: projectId,
@@ -1823,33 +2376,56 @@ export async function startServer({ port = 7456, returnServer = false } = {}) {
     let child;
     let acpSession = null;
     try {
-      // When the agent definition sets `promptViaStdin`, pipe the composed
-      // prompt through stdin instead of embedding it in argv. Bypasses the
-      // OS command-line length limit (Windows CreateProcess caps at ~32 KB)
-      // which causes `spawn ENAMETOOLONG` for any non-trivial prompt.
-      const stdinMode = def.promptViaStdin || def.streamFormat === 'acp-json-rpc' || needsFilePrompt ? 'pipe' : 'ignore';
-      child = spawn(resolvedBin, args, {
-        env: { ...process.env, ...odMediaEnv },
+      // Prompt delivery via stdin is now the universal default. This bypasses
+      // both the cmd.exe 8KB limit and the CreateProcess 32KB limit.
+      const stdinMode =
+        def.promptViaStdin || def.streamFormat === 'acp-json-rpc'
+          ? 'pipe'
+          : 'ignore';
+      const env = { ...process.env, ...odMediaEnv };
+      const invocation = createCommandInvocation({
+        command: resolvedBin,
+        args,
+        env,
+      });
+      child = spawn(invocation.command, invocation.args, {
+        env,
         stdio: [stdinMode, 'pipe', 'pipe'],
         cwd: cwd || undefined,
-        shell: useShell,
+        shell: false,
+        // Required when invocation wraps a Windows .cmd/.bat shim through
+        // cmd.exe; without this, Node re-escapes the inner command line and
+        // breaks paths containing spaces (issue #315).
+        windowsVerbatimArguments: invocation.windowsVerbatimArguments,
       });
       run.child = child;
-      if ((def.promptViaStdin || needsFilePrompt) && child.stdin && def.streamFormat !== 'pi-rpc') {
+      if (def.promptViaStdin && child.stdin && def.streamFormat !== 'pi-rpc') {
         // EPIPE from a fast-exiting CLI (bad auth, missing model, exit on
         // launch) would otherwise surface as an unhandled stream error and
         // crash the daemon. Swallow it — the regular exit/close handlers
         // below already route the underlying failure to SSE via stderr.
         child.stdin.on('error', (err) => {
           if (err.code !== 'EPIPE') {
-            send('error', createSseErrorPayload('AGENT_EXECUTION_FAILED', `stdin: ${err.message}`));
+            send(
+              'error',
+              createSseErrorPayload(
+                'AGENT_EXECUTION_FAILED',
+                `stdin: ${err.message}`,
+              ),
+            );
           }
         });
         child.stdin.end(composed, 'utf8');
       }
     } catch (err) {
-      cleanPromptFile();
-      design.runs.emit(run, 'error', createSseErrorPayload('AGENT_EXECUTION_FAILED', `spawn failed: ${err.message}`));
+      design.runs.emit(
+        run,
+        'error',
+        createSseErrorPayload(
+          'AGENT_EXECUTION_FAILED',
+          `spawn failed: ${err.message}`,
+        ),
+      );
       return design.runs.finish(run, 'failed', 1, null);
     }
 
@@ -1885,8 +2461,9 @@ export async function startServer({ port = 7456, returnServer = false } = {}) {
         send,
       });
     } else if (def.streamFormat === 'json-event-stream') {
-      const handler = createJsonEventStreamHandler(def.eventParser || def.id, (ev) =>
-        send('agent', ev),
+      const handler = createJsonEventStreamHandler(
+        def.eventParser || def.id,
+        (ev) => send('agent', ev),
       );
       child.stdout.on('data', (chunk) => handler.feed(chunk));
       child.on('close', () => handler.flush());
@@ -1896,7 +2473,10 @@ export async function startServer({ port = 7456, returnServer = false } = {}) {
     child.stderr.on('data', (chunk) => send('stderr', { chunk }));
 
     child.on('error', (err) => {
-      send('error', createSseErrorPayload('AGENT_EXECUTION_FAILED', err.message));
+      send(
+        'error',
+        createSseErrorPayload('AGENT_EXECUTION_FAILED', err.message),
+      );
       design.runs.finish(run, 'failed', 1, null);
     });
     child.on('close', (code, signal) => {
@@ -1960,7 +2540,8 @@ export async function startServer({ port = 7456, returnServer = false } = {}) {
   // providers. This keeps BYOK setup zero-config for local users at the cost of
   // one local streaming hop through the daemon.
 
-  const redactAuthTokens = (text) => text.replace(/Bearer [A-Za-z0-9_\-.+/=]+/g, 'Bearer [REDACTED]');
+  const redactAuthTokens = (text) =>
+    text.replace(/Bearer [A-Za-z0-9_\-.+/=]+/g, 'Bearer [REDACTED]');
 
   const validateExternalApiBaseUrl = (baseUrl) => {
     let parsed;
@@ -1987,310 +2568,287 @@ export async function startServer({ port = 7456, returnServer = false } = {}) {
   app.post('/api/proxy/anthropic/stream', async (req, res) => {
     /** @type {Partial<ProxyStreamRequest>} */
     const proxyBody = req.body || {};
-    const { baseUrl, apiKey, model, systemPrompt, messages } = proxyBody;
+    const { baseUrl, apiKey, model, systemPrompt, messages, maxTokens } =
+      proxyBody;
     if (!baseUrl || !apiKey || !model) {
-      return sendApiError(res, 400, 'BAD_REQUEST', 'baseUrl, apiKey, and model are required');
+      return sendApiError(
+        res,
+        400,
+        'BAD_REQUEST',
+        'baseUrl, apiKey, and model are required',
+      );
     }
 
     const validated = validateExternalApiBaseUrl(baseUrl);
     if (validated.error) {
-      return sendApiError(res, validated.forbidden ? 403 : 400, validated.forbidden ? 'FORBIDDEN' : 'BAD_REQUEST', validated.error);
+      return sendApiError(
+        res,
+        validated.forbidden ? 403 : 400,
+        validated.forbidden ? 'FORBIDDEN' : 'BAD_REQUEST',
+        validated.error,
+      );
     }
 
     const clean = baseUrl.replace(/\/+$/, '');
-    const url = /\/v\d+$/.test(clean) ? `${clean}/messages` : `${clean}/v1/messages`;
-    console.log(`[proxy:anthropic] ${req.method} ${validated.parsed.hostname} model=${model}`);
+    const url = /\/v\d+$/.test(clean)
+      ? `${clean}/messages`
+      : `${clean}/v1/messages`;
+    console.log(
+      `[proxy:anthropic] ${req.method} ${validated.parsed.hostname} model=${model}`,
+    );
 
     const payload = {
       model,
-      max_tokens: 8192,
+      max_tokens:
+        typeof maxTokens === 'number' && maxTokens > 0 ? maxTokens : 8192,
+      messages: Array.isArray(messages) ? messages : [],
       stream: true,
-      system: systemPrompt || '',
-      messages: Array.isArray(messages)
-        ? messages
-          .filter((m) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string')
-          .map((m) => ({ role: m.role, content: m.content }))
-        : [],
     };
+    if (typeof systemPrompt === 'string' && systemPrompt) {
+      payload.system = systemPrompt;
+    }
 
     const sse = createSseResponse(res);
-    const send = sse.send;
-
-    let upstream;
     try {
-      upstream = await fetch(url, {
+      const response = await fetch(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'x-api-key': apiKey,
           'anthropic-version': '2023-06-01',
-          Authorization: `Bearer ${apiKey}`,
         },
         body: JSON.stringify(payload),
       });
-    } catch (fetchErr) {
-      send('error', createSseErrorPayload('UPSTREAM_UNAVAILABLE', `fetch failed: ${fetchErr.message}`, { retryable: true }));
-      return sse.end();
-    }
 
-    if (!upstream.ok) {
-      const errText = await upstream.text().catch(() => '');
-      const safeErr = redactAuthTokens(errText.slice(0, 500));
-      console.error(`[proxy:anthropic] upstream ${upstream.status}: ${safeErr.slice(0, 200)}`);
-      send('error', createSseErrorPayload('UPSTREAM_UNAVAILABLE', `upstream ${upstream.status}: ${safeErr}`, { retryable: upstream.status >= 500 }));
-      return sse.end();
-    }
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error(
+          `[proxy:anthropic] upstream error: ${response.status} ${redactAuthTokens(errorText)}`,
+        );
+        sse.send('error', {
+          message: `Upstream error: ${response.status}`,
+          details: errorText,
+        });
+        return sse.end();
+      }
 
-    send('start', { model });
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
 
-    const reader = upstream.body.getReader();
-    const decoder = new TextDecoder();
-    let buf = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
 
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-
-      let match;
-      while ((match = buf.match(/\r?\n\r?\n/)) && match.index != null) {
-        const frame = buf.slice(0, match.index);
-        buf = buf.slice(match.index + match[0].length);
-        const raw = frame
-          .split(/\r?\n/)
-          .filter((line) => line.startsWith('data:'))
-          .map((line) => line.slice(5).trimStart())
-          .join('\n')
-          .trim();
-        if (!raw) continue;
-        if (raw === '[DONE]') {
-          send('end', {});
-          return sse.end();
-        }
-        try {
-          const chunk = JSON.parse(raw);
-          if (chunk.type === 'content_block_delta') {
-            const text = chunk.delta?.text ?? chunk.delta?.partial_json ?? '';
-            if (text) send('delta', { text });
-          } else if (chunk.type === 'message_delta') {
-            const text = chunk.delta?.text ?? '';
-            if (text) send('delta', { text });
-          } else if (chunk.type === 'message_stop') {
-            send('end', {});
-            return sse.end();
-          } else if (chunk.type === 'error') {
-            send('error', createSseErrorPayload('UPSTREAM_UNAVAILABLE', chunk.error?.message || 'upstream error', { retryable: false }));
-            return sse.end();
-          } else if (process.env.NODE_ENV === 'development') {
-            // Anthropic-compatible providers sometimes add vendor-specific
-            // events. Unknown non-text events are ignored but surfaced in dev
-            // logs to make provider compatibility issues easier to diagnose.
-            console.warn(`[proxy:anthropic] skipped upstream event type=${chunk.type || 'unknown'}`);
-          }
-        } catch {
-          if (process.env.NODE_ENV === 'development') {
-            console.warn('[proxy:anthropic] skipped malformed upstream SSE frame');
+        for (const line of lines) {
+          if (line.startsWith('event: ')) {
+            const event = line.slice(7).trim();
+            const dataLine = lines[lines.indexOf(line) + 1];
+            if (dataLine && dataLine.startsWith('data: ')) {
+              try {
+                const data = JSON.parse(dataLine.slice(6));
+                sse.send(event, data);
+              } catch (e) {
+                // ignore parse errors for partial chunks
+              }
+            }
           }
         }
       }
+      sse.end();
+    } catch (err) {
+      console.error(`[proxy:anthropic] internal error: ${err.message}`);
+      sse.send('error', { message: err.message });
+      sse.end();
     }
-
-    send('end', {});
-    sse.end();
   });
 
-  app.post('/api/proxy/stream', async (req, res) => {
+  app.post('/api/proxy/openai/stream', async (req, res) => {
     /** @type {Partial<ProxyStreamRequest>} */
     const proxyBody = req.body || {};
-    const { baseUrl, apiKey, model, systemPrompt, messages } = proxyBody;
+    const { baseUrl, apiKey, model, systemPrompt, messages, maxTokens } =
+      proxyBody;
     if (!baseUrl || !apiKey || !model) {
-      return sendApiError(res, 400, 'BAD_REQUEST', 'baseUrl, apiKey, and model are required');
+      return sendApiError(
+        res,
+        400,
+        'BAD_REQUEST',
+        'baseUrl, apiKey, and model are required',
+      );
     }
 
-    // Validate baseUrl — only allow http/https and block internal IPs (SSRF).
     const validated = validateExternalApiBaseUrl(baseUrl);
     if (validated.error) {
-      return sendApiError(res, validated.forbidden ? 403 : 400, validated.forbidden ? 'FORBIDDEN' : 'BAD_REQUEST', validated.error);
+      return sendApiError(
+        res,
+        validated.forbidden ? 403 : 400,
+        validated.forbidden ? 'FORBIDDEN' : 'BAD_REQUEST',
+        validated.error,
+      );
     }
 
-    // Build the upstream URL. If the base URL already ends with /v1 (or
-    // /v1/), append /chat/completions directly. Otherwise append
-    // /v1/chat/completions for providers that expect a versioned prefix.
-    let url;
     const clean = baseUrl.replace(/\/+$/, '');
-    if (/\/v\d+$/.test(clean)) {
-      url = clean + '/chat/completions';
-    } else {
-      url = clean + '/v1/chat/completions';
-    }
+    const url = /\/v\d+$/.test(clean)
+      ? `${clean}/chat/completions`
+      : `${clean}/v1/chat/completions`;
+    console.log(
+      `[proxy:openai] ${req.method} ${validated.parsed.hostname} model=${model}`,
+    );
 
-    // Force MiMo to behave as a pure text generator (no tool calls)
-    const isMiMo = model.toLowerCase().startsWith('mimo');
-    console.log(`[proxy] ${req.method} ${validated.parsed.hostname} model=${model} miMo=${isMiMo}`);
+    const payloadMessages = Array.isArray(messages) ? [...messages] : [];
+    if (typeof systemPrompt === 'string' && systemPrompt) {
+      payloadMessages.unshift({ role: 'system', content: systemPrompt });
+    }
 
     const payload = {
       model,
-      max_tokens: 8192,
+      messages: payloadMessages,
+      max_tokens:
+        typeof maxTokens === 'number' && maxTokens > 0 ? maxTokens : 8192,
       stream: true,
-      ...(isMiMo ? { tool_choice: 'none', tools: [] } : {}),
-      messages: [
-        { role: 'system', content: systemPrompt || '' },
-        ...(Array.isArray(messages) ? messages : []),
-      ],
     };
-    const body = JSON.stringify(payload);
 
     const sse = createSseResponse(res);
-    const send = sse.send;
-
-    let upstream;
     try {
-      upstream = await fetch(url, {
+      const response = await fetch(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${apiKey}`,
         },
-        body,
+        body: JSON.stringify(payload),
       });
-    } catch (fetchErr) {
-      send('error', createSseErrorPayload('UPSTREAM_UNAVAILABLE', `fetch failed: ${fetchErr.message}`, { retryable: true }));
-      return sse.end();
-    }
 
-    if (!upstream.ok) {
-      const errText = await upstream.text().catch(() => '');
-      const safeErr = redactAuthTokens(errText.slice(0, 500));
-      console.error(`[proxy] upstream ${upstream.status}: ${safeErr.slice(0, 200)}`);
-      send('error', createSseErrorPayload('UPSTREAM_UNAVAILABLE', `upstream ${upstream.status}: ${safeErr}`, { retryable: upstream.status >= 500 }));
-      return sse.end();
-    }
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error(
+          `[proxy:openai] upstream error: ${response.status} ${redactAuthTokens(errorText)}`,
+        );
+        sse.send('error', {
+          message: `Upstream error: ${response.status}`,
+          details: errorText,
+        });
+        return sse.end();
+      }
 
-    send('start', { model });
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
 
-    const reader = upstream.body.getReader();
-    const decoder = new TextDecoder();
-    let buf = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
 
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-
-      let idx;
-      while ((idx = buf.indexOf('\n')) !== -1) {
-        const line = buf.slice(0, idx);
-        buf = buf.slice(idx + 1);
-        if (!line.startsWith('data: ')) continue;
-        const payload = line.slice(6).trim();
-        if (payload === '[DONE]') {
-          send('end', {});
-          return sse.end();
-        }
-        try {
-          const chunk = JSON.parse(payload);
-          const delta = chunk.choices?.[0]?.delta;
-          if (delta) {
-            let text = delta.content ?? '';
-            if (text) {
-              send('delta', { text });
-            }
-            // Structured tool_calls from the API (not in content)
-            if (Array.isArray(delta.tool_calls)) {
-              for (const tc of delta.tool_calls) {
-                const fn = tc.function;
-                if (fn?.name) {
-                  send('delta', { text: `\n\n[${fn.name}]\n` });
-                }
-              }
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const dataStr = line.slice(6).trim();
+            if (dataStr === '[DONE]') break;
+            try {
+              const data = JSON.parse(dataStr);
+              sse.send('message', data);
+            } catch (e) {
+              // ignore parse errors for partial chunks
             }
           }
-        } catch {
-          // skip malformed chunks
         }
       }
+      sse.end();
+    } catch (err) {
+      console.error(`[proxy:openai] internal error: ${err.message}`);
+      sse.send('error', { message: err.message });
+      sse.end();
     }
-
-    send('end', {});
-    sse.end();
   });
 
-  // SPA fallback for the built web app. Put this LAST so it never shadows
-  // /api routes. Only active when out/ exists (production mode).
-  //
-  // Next.js's static export writes a single shell HTML at out/index.html
-  // for the optional catch-all route (`app/[[...slug]]/page.tsx`); project
-  // IDs aren't pre-rendered, so any unknown deep link (e.g. /projects/abc)
-  // needs to fall back to that shell so the client router can pick the
-  // right view at runtime.
-  if (fs.existsSync(STATIC_DIR)) {
-    app.get(/^\/(?!api\/|artifacts\/|frames\/).*/, (_req, res) => {
-      res.sendFile(path.join(STATIC_DIR, 'index.html'));
-    });
-  }
-
-  return new Promise((resolve) => {
-    const server = app.listen(port, '127.0.0.1', () => {
+  // Wait for `listen` to bind so callers always see the resolved URL —
+  // critical when port=0 (ephemeral port) and when the embedding sidecar
+  // needs to advertise the port to a parent process before any request
+  // can flow. Three callers depend on this contract:
+  //   - `apps/daemon/src/cli.ts`            → expects a `url` string
+  //   - `apps/daemon/sidecar/server.ts`     → expects `{ url, server }`
+  //   - `apps/daemon/tests/version-route.test.ts` → expects `{ url, server }`
+  return await new Promise((resolve, reject) => {
+    const server = app.listen(port, host, () => {
       const address = server.address();
-      const actualPort = typeof address === 'object' && address ? address.port : port;
-      const url = `http://127.0.0.1:${actualPort}`;
+      // `address()` can in theory return `string | AddressInfo | null`. For
+      // a TCP listener it's always `AddressInfo` with a `.port` — the guard
+      // is belt-and-braces so an unexpected null never silently produces a
+      // `http://127.0.0.1:0` URL that callers would then try to fetch.
+      const boundPort =
+        address && typeof address === 'object' ? address.port : null;
+      if (!boundPort) {
+        reject(
+          new Error(
+            `[od] daemon failed to resolve listening port (address=${JSON.stringify(address)})`,
+          ),
+        );
+        return;
+      }
+      resolvedPort = boundPort;
+      // When binding to all interfaces report localhost for local callers;
+      // when binding to a specific address (e.g. a Tailscale IP) report that
+      // address so remote callers and the sidecar use the correct URL.
+      const reportHost = host === '0.0.0.0' || host === '::' ? '127.0.0.1' : host;
+      const url = `http://${reportHost}:${resolvedPort}`;
+      if (!returnServer) {
+        console.log(`[od] daemon listening on ${url}`);
+      }
       resolve(returnServer ? { url, server } : url);
     });
+    // `app.listen` throws synchronously when the port is already in use on
+    // some Node versions, but emits an `error` event on others (and for
+    // EACCES / EADDRNOTAVAIL even on the same Node). Wire the event so the
+    // returned Promise always settles instead of hanging forever.
+    server.on('error', reject);
   });
 }
 
-// Assemble a skill's example deck from its seed template + a slides
-// snippet. The seed contains the full CSS / WebGL / nav-JS shell with a
-// `<!-- SLIDES_HERE -->` marker; the snippet contributes the actual
-// `<section class="slide ...">` content. We also patch the placeholder
-// `<title>` so the iframe's tab name reads as the skill, not the
-// "[必填] 替换为 PPT 标题" stub.
-function assembleExample(tplHtml, slidesHtml, skillName) {
-  const slidesMarker = /<!--\s*SLIDES_HERE\s*-->/i;
-  const titleTag = /<title>[^<]*<\/title>/i;
-  const safeTitle = `${skillName || 'Magazine Web PPT'} · Example Deck`;
-  const withSlides = slidesMarker.test(tplHtml)
-    ? tplHtml.replace(slidesMarker, slidesHtml)
-    : tplHtml.replace(/<\/body>/i, `${slidesHtml}</body>`);
-  return titleTag.test(withSlides)
-    ? withSlides.replace(titleTag, `<title>${escapeHtml(safeTitle)}</title>`)
-    : withSlides;
+function randomId() {
+  return randomUUID();
 }
 
-function escapeHtml(s) {
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+function sanitizeSlug(text) {
+  return String(text)
+    .toLowerCase()
+    .replace(/[^\w\s-]/g, '')
+    .replace(/[\s_]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 64);
 }
 
-function isLocalSameOrigin(req, port) {
-  const allowedHosts = new Set([
-    `127.0.0.1:${port}`,
-    `localhost:${port}`,
-    `[::1]:${port}`,
-  ]);
-  const allowedOrigins = new Set([
-    `http://127.0.0.1:${port}`,
-    `http://localhost:${port}`,
-    `http://[::1]:${port}`,
-  ]);
+function assembleExample(templateHtml, slidesHtml, title) {
+  return templateHtml
+    .replace('<!-- SLIDES_HERE -->', slidesHtml)
+    .replace(
+      /<title>.*?<\/title>/,
+      `<title>${title} | Open Design Example</title>`,
+    );
+}
+
+export function isLocalSameOrigin(req, port) {
+  const ports = [port];
+  const webPort = Number(process.env.OD_WEB_PORT);
+  if (webPort && webPort !== port) ports.push(webPort);
+
+  const allowedHosts = new Set(
+    ports.flatMap((p) => [`127.0.0.1:${p}`, `localhost:${p}`, `[::1]:${p}`]),
+  );
+  const allowedOrigins = new Set(
+    ports.flatMap((p) => [
+      `http://127.0.0.1:${p}`,
+      `http://localhost:${p}`,
+      `http://[::1]:${p}`,
+    ]),
+  );
   const host = String(req.headers.host || '');
   if (!allowedHosts.has(host)) return false;
   const origin = req.headers.origin;
   if (origin == null || origin === '') return true;
   return allowedOrigins.has(String(origin));
-}
-
-function sanitizeSlug(s) {
-  return String(s)
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 40) || 'artifact';
-}
-
-function randomId() {
-  return randomUUID();
 }

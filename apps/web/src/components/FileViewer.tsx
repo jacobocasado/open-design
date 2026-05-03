@@ -15,13 +15,32 @@ import {
   updateDeployConfig,
 } from '../providers/registry';
 import type { ProjectFilePreview } from '../providers/registry';
-import { exportAsHtml, exportAsPdf, exportAsZip } from '../runtime/exports';
+import {
+  exportAsHtml,
+  exportAsJsx,
+  exportAsMd,
+  exportAsPdf,
+  exportProjectAsZip,
+  exportReactComponentAsHtml,
+  exportReactComponentAsZip,
+} from '../runtime/exports';
+import { buildReactComponentSrcdoc } from '../runtime/react-component';
 import { buildSrcdoc } from '../runtime/srcdoc';
 import { saveTemplate } from '../state/projects';
 import type { DeployConfigResponse, DeployProjectFileResponse, ProjectFile } from '../types';
 import { Icon } from './Icon';
+import {
+  liveSnapshotForComment,
+  overlayBoundsFromSnapshot,
+  targetFromSnapshot,
+  type PreviewCommentSnapshot,
+} from '../comments';
+import type { PreviewComment, PreviewCommentTarget } from '../types';
 
 type TranslateFn = (key: keyof Dict, vars?: Record<string, string | number>) => string;
+type SlideState = { active: number; count: number };
+
+const htmlPreviewSlideState = new Map<string, SlideState>();
 
 interface Props {
   projectId: string;
@@ -30,6 +49,9 @@ interface Props {
   isDeck?: boolean;
   onExportAsPptx?: ((fileName: string) => void) | undefined;
   streaming?: boolean;
+  previewComments?: PreviewComment[];
+  onSavePreviewComment?: (target: PreviewCommentTarget, note: string, attachAfterSave: boolean) => Promise<PreviewComment | null>;
+  onRemovePreviewComment?: (commentId: string) => Promise<void>;
 }
 
 export function FileViewer({
@@ -39,6 +61,9 @@ export function FileViewer({
   isDeck,
   onExportAsPptx,
   streaming,
+  previewComments = [],
+  onSavePreviewComment,
+  onRemovePreviewComment,
 }: Props) {
   const rendererMatch = artifactRendererRegistry.resolve({
     file,
@@ -54,8 +79,14 @@ export function FileViewer({
         isDeck={rendererMatch.renderer.id === 'deck-html'}
         onExportAsPptx={onExportAsPptx}
         streaming={Boolean(streaming)}
+        previewComments={previewComments}
+        onSavePreviewComment={onSavePreviewComment}
+        onRemovePreviewComment={onRemovePreviewComment}
       />
     );
+  }
+  if (rendererMatch?.renderer.id === 'react-component') {
+    return <ReactComponentViewer projectId={projectId} file={file} />;
   }
   if (rendererMatch?.renderer.id === 'markdown') {
     return <MarkdownViewer projectId={projectId} file={file} />;
@@ -114,6 +145,344 @@ function FileActions({
       >
         {t('fileViewer.open')}
       </a>
+    </div>
+  );
+}
+
+function CommentPopover({
+  target,
+  existing,
+  draft,
+  onDraft,
+  onClose,
+  onSave,
+  onRemove,
+  t,
+}: {
+  target: PreviewCommentSnapshot;
+  existing: PreviewComment | null;
+  draft: string;
+  onDraft: (value: string) => void;
+  onClose: () => void;
+  onSave: (attach: boolean) => void | Promise<void>;
+  onRemove: (commentId: string) => void | Promise<void>;
+  t: TranslateFn;
+}) {
+  return (
+    <div className="comment-popover" data-testid="comment-popover">
+      <div className="comment-popover-head">
+        <div>
+          <strong>{target.elementId}</strong>
+          <span>{target.label}</span>
+        </div>
+        <button type="button" className="ghost" onClick={onClose}>
+          {t('common.close')}
+        </button>
+      </div>
+      <textarea
+        data-testid="comment-popover-input"
+        value={draft}
+        placeholder={t('chat.comments.placeholder')}
+        onChange={(event) => onDraft(event.target.value)}
+      />
+      <div className="comment-popover-actions">
+        {existing ? (
+          <button type="button" className="comment-popover-remove" onClick={() => onRemove(existing.id)}>
+            {t('chat.comments.remove')}
+          </button>
+        ) : <span />}
+        <button
+          type="button"
+          className="primary"
+          data-testid="comment-add-send"
+          disabled={!draft.trim()}
+          onClick={() => void onSave(true)}
+        >
+          {existing ? t('chat.comments.updateSend') : t('chat.comments.addSend')}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function CommentPreviewOverlays({
+  comments,
+  liveTargets,
+  hoveredTarget,
+  activeTarget,
+  scale,
+  onOpenComment,
+}: {
+  comments: PreviewComment[];
+  liveTargets: Map<string, PreviewCommentSnapshot>;
+  hoveredTarget: PreviewCommentSnapshot | null;
+  activeTarget: PreviewCommentSnapshot | null;
+  scale: number;
+  onOpenComment: (comment: PreviewComment, snapshot: PreviewCommentSnapshot) => void;
+}) {
+  const visibleComments = comments
+    .map((comment, index) => ({
+      comment,
+      index,
+      snapshot: liveSnapshotForComment(comment, liveTargets),
+    }))
+    .filter((item): item is { comment: PreviewComment; index: number; snapshot: PreviewCommentSnapshot } =>
+      Boolean(item.snapshot),
+    );
+  const targetOverlay = activeTarget ?? hoveredTarget;
+  return (
+    <div className="comment-overlay-layer" aria-hidden={false}>
+      {visibleComments.map(({ comment, index, snapshot }) => {
+        const bounds = overlayBoundsFromSnapshot(snapshot, scale);
+        return (
+          <div
+            key={comment.id}
+            className="comment-saved-marker"
+            style={{
+              left: bounds.left,
+              top: bounds.top,
+              width: bounds.width,
+              height: bounds.height,
+            }}
+            data-testid={`comment-saved-marker-${comment.elementId}`}
+          >
+            <div className="comment-saved-outline" />
+            <button
+              type="button"
+              className="comment-saved-pin"
+              onClick={() => onOpenComment(comment, snapshot)}
+              title={`${comment.elementId}: ${comment.note}`}
+              aria-label={`Open comment for ${comment.elementId}`}
+            >
+              {index + 1}
+            </button>
+          </div>
+        );
+      })}
+      {targetOverlay ? (
+        <CommentTargetOverlay
+          snapshot={targetOverlay}
+          scale={scale}
+          selected={Boolean(activeTarget)}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function CommentTargetOverlay({
+  snapshot,
+  scale,
+  selected,
+}: {
+  snapshot: PreviewCommentSnapshot;
+  scale: number;
+  selected: boolean;
+}) {
+  const bounds = overlayBoundsFromSnapshot(snapshot, scale);
+  const width = Math.round(snapshot.position.width);
+  const height = Math.round(snapshot.position.height);
+  return (
+    <div
+      className={`comment-target-overlay${selected ? ' selected' : ''}`}
+      style={{
+        left: bounds.left,
+        top: bounds.top,
+        width: bounds.width,
+        height: bounds.height,
+      }}
+      data-testid="comment-target-overlay"
+    >
+      <div className="comment-target-tooltip">
+        <strong>{snapshot.elementId}</strong>
+        <span>{snapshot.label}</span>
+        <span>{width} × {height}</span>
+      </div>
+    </div>
+  );
+}
+
+function ReactComponentViewer({
+  projectId,
+  file,
+}: {
+  projectId: string;
+  file: ProjectFile;
+}) {
+  const t = useT();
+  const [mode, setMode] = useState<'preview' | 'source'>('preview');
+  const [source, setSource] = useState<string | null>(null);
+  const [srcDoc, setSrcDoc] = useState('');
+  const [reloadKey, setReloadKey] = useState(0);
+  const [shareMenuOpen, setShareMenuOpen] = useState(false);
+  const shareRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    setSource(null);
+    let cancelled = false;
+    void fetchProjectFileText(projectId, file.name).then((text) => {
+      if (!cancelled) setSource(text ?? '');
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, file.name, file.mtime, reloadKey]);
+
+  useEffect(() => {
+    if (!shareMenuOpen) return;
+    const onDocClick = (e: MouseEvent) => {
+      if (!shareRef.current) return;
+      if (!shareRef.current.contains(e.target as Node)) setShareMenuOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setShareMenuOpen(false);
+    };
+    document.addEventListener('mousedown', onDocClick);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDocClick);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [shareMenuOpen]);
+
+  const exportTitle = file.name.replace(/\.(jsx|tsx)$/i, '') || file.name;
+  const sourceExtension = file.name.toLowerCase().endsWith('.tsx') ? '.tsx' : '.jsx';
+
+  useEffect(() => {
+    if (source === null) {
+      setSrcDoc('');
+      return;
+    }
+
+    let cancelled = false;
+    const buildSrcDoc = () => {
+      const nextSrcDoc = buildReactComponentSrcdoc(source, { title: exportTitle });
+      if (!cancelled) setSrcDoc(nextSrcDoc);
+    };
+
+    if (source.length > 100_000) {
+      setSrcDoc('');
+      const timeout = window.setTimeout(buildSrcDoc, 0);
+      return () => {
+        cancelled = true;
+        window.clearTimeout(timeout);
+      };
+    }
+
+    buildSrcDoc();
+    return () => {
+      cancelled = true;
+    };
+  }, [source, exportTitle]);
+
+  return (
+    <div className="viewer react-component-viewer">
+      <div className="viewer-toolbar">
+        <div className="viewer-toolbar-left">
+          <button
+            type="button"
+            className="icon-only"
+            onClick={() => setReloadKey((n) => n + 1)}
+            title={t('fileViewer.reload')}
+            aria-label={t('fileViewer.reloadAria')}
+          >
+            <Icon name="reload" size={14} />
+          </button>
+          <span className="viewer-meta">
+            {t('fileViewer.reactMeta', { size: humanSize(file.size) })}
+          </span>
+        </div>
+        <div className="viewer-toolbar-actions">
+          <div className="viewer-tabs">
+            <button
+              type="button"
+              className={`viewer-tab ${mode === 'preview' ? 'active' : ''}`}
+              onClick={() => setMode('preview')}
+            >
+              {t('fileViewer.preview')}
+            </button>
+            <button
+              type="button"
+              className={`viewer-tab ${mode === 'source' ? 'active' : ''}`}
+              onClick={() => setMode('source')}
+            >
+              {t('fileViewer.source')}
+            </button>
+          </div>
+          {source !== null ? (
+            <>
+              <span className="viewer-divider" aria-hidden />
+              <div className="share-menu" ref={shareRef}>
+                <button
+                  type="button"
+                  className="viewer-action primary"
+                  aria-haspopup="menu"
+                  aria-expanded={shareMenuOpen}
+                  onClick={() => setShareMenuOpen((v) => !v)}
+                >
+                  <span>{t('fileViewer.shareLabel')}</span>
+                  <Icon name="chevron-down" size={11} />
+                </button>
+                {shareMenuOpen ? (
+                  <div className="share-menu-popover" role="menu">
+                    <button
+                      type="button"
+                      className="share-menu-item"
+                      role="menuitem"
+                      onClick={() => {
+                        setShareMenuOpen(false);
+                        exportAsJsx(source, exportTitle, sourceExtension);
+                      }}
+                    >
+                      <span className="share-menu-icon"><Icon name="file-code" size={14} /></span>
+                      <span>{t('fileViewer.exportJsx')}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="share-menu-item"
+                      role="menuitem"
+                      onClick={() => {
+                        setShareMenuOpen(false);
+                        exportReactComponentAsHtml(source, exportTitle);
+                      }}
+                    >
+                      <span className="share-menu-icon"><Icon name="file" size={14} /></span>
+                      <span>{t('fileViewer.exportReactHtml')}</span>
+                    </button>
+                    <div className="share-menu-divider" />
+                    <button
+                      type="button"
+                      className="share-menu-item"
+                      role="menuitem"
+                      onClick={() => {
+                        setShareMenuOpen(false);
+                        exportReactComponentAsZip(source, exportTitle, sourceExtension);
+                      }}
+                    >
+                      <span className="share-menu-icon"><Icon name="download" size={14} /></span>
+                      <span>{t('fileViewer.exportZip')}</span>
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+            </>
+          ) : null}
+        </div>
+      </div>
+      <div className="viewer-body">
+        {source === null || (mode === 'preview' && !srcDoc) ? (
+          <div className="viewer-empty">{t('fileViewer.loading')}</div>
+        ) : mode === 'preview' ? (
+          <iframe
+            data-testid="react-component-preview-frame"
+            title={file.name}
+            sandbox="allow-scripts"
+            srcDoc={srcDoc}
+          />
+        ) : (
+          <CodeWithLines text={source} />
+        )}
+      </div>
     </div>
   );
 }
@@ -211,6 +580,9 @@ function HtmlViewer({
   isDeck,
   onExportAsPptx,
   streaming,
+  previewComments = [],
+  onSavePreviewComment,
+  onRemovePreviewComment,
 }: {
   projectId: string;
   file: ProjectFile;
@@ -218,10 +590,14 @@ function HtmlViewer({
   isDeck: boolean;
   onExportAsPptx?: ((fileName: string) => void) | undefined;
   streaming: boolean;
+  previewComments?: PreviewComment[];
+  onSavePreviewComment?: (target: PreviewCommentTarget, note: string, attachAfterSave: boolean) => Promise<PreviewComment | null>;
+  onRemovePreviewComment?: (commentId: string) => Promise<void>;
 }) {
   const t = useT();
   const [mode, setMode] = useState<'preview' | 'source'>('preview');
   const [source, setSource] = useState<string | null>(liveHtml ?? null);
+  const [inlinedSource, setInlinedSource] = useState<string | null>(null);
   const [zoom, setZoom] = useState(100);
   const [presentMenuOpen, setPresentMenuOpen] = useState(false);
   const [shareMenuOpen, setShareMenuOpen] = useState(false);
@@ -243,10 +619,18 @@ function HtmlViewer({
   const [teamSlug, setTeamSlug] = useState('');
   const [inTabPresent, setInTabPresent] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
+  const [commentMode, setCommentMode] = useState(false);
+  const [activeCommentTarget, setActiveCommentTarget] = useState<PreviewCommentSnapshot | null>(null);
+  const [hoveredCommentTarget, setHoveredCommentTarget] = useState<PreviewCommentSnapshot | null>(null);
+  const [liveCommentTargets, setLiveCommentTargets] = useState<Map<string, PreviewCommentSnapshot>>(() => new Map());
+  const [commentDraft, setCommentDraft] = useState('');
+  const previewStateKey = `${projectId}:${file.name}`;
   // Slide deck nav state: the iframe posts the active index + total count
   // back to the host every time a slide settles. Host renders prev/next
   // controls in the toolbar and reflects the count beside them.
-  const [slideState, setSlideState] = useState<{ active: number; count: number } | null>(null);
+  const [slideState, setSlideState] = useState<SlideState | null>(
+    () => htmlPreviewSlideState.get(previewStateKey) ?? null,
+  );
   const previewBodyRef = useRef<HTMLDivElement | null>(null);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const shareRef = useRef<HTMLDivElement | null>(null);
@@ -294,13 +678,28 @@ function HtmlViewer({
     return /class\s*=\s*['"][^'"]*\bslide\b/i.test(source);
   }, [source]);
   const effectiveDeck = isDeck || looksLikeDeck;
+  const previewSource = inlinedSource ?? source;
+
+  useEffect(() => {
+    setInlinedSource(null);
+    if (!source || effectiveDeck || !hasRelativeAssetRefs(source)) return;
+    let cancelled = false;
+    void inlineRelativeAssets(source, projectId, file.name).then((next) => {
+      if (!cancelled) setInlinedSource(next);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [source, effectiveDeck, projectId, file.name]);
 
   const srcDoc = useMemo(
-    () => (source ? buildSrcdoc(source, {
+    () => (previewSource ? buildSrcdoc(previewSource, {
       deck: effectiveDeck,
       baseHref: projectRawUrl(projectId, baseDirFor(file.name)),
+      initialSlideIndex: htmlPreviewSlideState.get(previewStateKey)?.active ?? 0,
+      commentBridge: commentMode,
     }) : ''),
-    [source, effectiveDeck, projectId, file.name],
+    [previewSource, effectiveDeck, projectId, file.name, previewStateKey, commentMode],
   );
 
   useEffect(() => {
@@ -308,17 +707,102 @@ function HtmlViewer({
       setSlideState(null);
       return;
     }
+    setSlideState(htmlPreviewSlideState.get(previewStateKey) ?? null);
     function onMessage(ev: MessageEvent) {
+      if (ev.source !== iframeRef.current?.contentWindow) return;
       const data = ev?.data as
         | { type?: string; active?: number; count?: number }
         | null;
       if (!data || data.type !== 'od:slide-state') return;
       if (typeof data.active !== 'number' || typeof data.count !== 'number') return;
-      setSlideState({ active: data.active, count: data.count });
+      const next = { active: data.active, count: data.count };
+      htmlPreviewSlideState.set(previewStateKey, next);
+      setSlideState(next);
     }
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, [effectiveDeck]);
+  }, [effectiveDeck, previewStateKey]);
+
+  useEffect(() => {
+    const win = iframeRef.current?.contentWindow;
+    if (!win) return;
+    win.postMessage({ type: 'od:comment-mode', enabled: commentMode }, '*');
+  }, [commentMode, srcDoc]);
+
+  useEffect(() => {
+    setActiveCommentTarget(null);
+    setHoveredCommentTarget(null);
+    setLiveCommentTargets(new Map());
+    setCommentDraft('');
+  }, [file.name]);
+
+  useEffect(() => {
+    if (!commentMode) {
+      setActiveCommentTarget(null);
+      setHoveredCommentTarget(null);
+      setLiveCommentTargets(new Map());
+      return;
+    }
+    const snapshotFromData = (data: Partial<PreviewCommentSnapshot>): PreviewCommentSnapshot => ({
+      filePath: file.name,
+      elementId: String(data.elementId || ''),
+      selector: String(data.selector || ''),
+      label: String(data.label || ''),
+      text: String(data.text || ''),
+      position: {
+        x: Number(data.position?.x) || 0,
+        y: Number(data.position?.y) || 0,
+        width: Number(data.position?.width) || 0,
+        height: Number(data.position?.height) || 0,
+      },
+      htmlHint: String(data.htmlHint || ''),
+    });
+    function onMessage(ev: MessageEvent) {
+      if (ev.source !== iframeRef.current?.contentWindow) return;
+      const data = ev.data as (Partial<PreviewCommentSnapshot> & {
+        type?: string;
+        targets?: Array<Partial<PreviewCommentSnapshot>>;
+      }) | null;
+      if (!data?.type) return;
+      if (data.type === 'od:comment-targets' && Array.isArray(data.targets)) {
+        const next = new Map<string, PreviewCommentSnapshot>();
+        data.targets.forEach((item) => {
+          const snapshot = snapshotFromData(item);
+          if (snapshot.elementId) next.set(snapshot.elementId, snapshot);
+        });
+        setLiveCommentTargets(next);
+        setActiveCommentTarget((current) => (
+          current ? next.get(current.elementId) ?? null : null
+        ));
+        setHoveredCommentTarget((current) => (
+          current ? next.get(current.elementId) ?? null : null
+        ));
+        return;
+      }
+      if (data.type === 'od:comment-leave') {
+        setHoveredCommentTarget(null);
+        return;
+      }
+      if (data.type === 'od:comment-hover') {
+        const snapshot = snapshotFromData(data);
+        if (!snapshot.elementId) return;
+        setHoveredCommentTarget(snapshot);
+        setLiveCommentTargets((current) => new Map(current).set(snapshot.elementId, snapshot));
+        return;
+      }
+      if (data.type === 'od:comment-target') {
+        const snapshot = snapshotFromData(data);
+        if (!snapshot.elementId) return;
+        const existing = previewComments.find((comment) => comment.elementId === snapshot.elementId);
+        setActiveCommentTarget(snapshot);
+        setHoveredCommentTarget(snapshot);
+        setLiveCommentTargets((current) => new Map(current).set(snapshot.elementId, snapshot));
+        setCommentDraft(existing?.note ?? '');
+      }
+    }
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, [commentMode, file.name, previewComments]);
 
   function postSlide(action: 'next' | 'prev' | 'first' | 'last') {
     const win = iframeRef.current?.contentWindow;
@@ -674,11 +1158,11 @@ function HtmlViewer({
           </div>
           <span className="viewer-divider" aria-hidden />
           <button
-            className="viewer-action"
+            className={`viewer-action${commentMode ? ' active' : ''}`}
             type="button"
-            disabled
-            data-coming-soon="true"
+            data-testid="comment-mode-toggle"
             title={t('fileViewer.comment')}
+            onClick={() => setCommentMode((v) => !v)}
           >
             <Icon name="comment" size={13} />
             <span>{t('fileViewer.comment')}</span>
@@ -818,7 +1302,12 @@ function HtmlViewer({
                     role="menuitem"
                     onClick={() => {
                       setShareMenuOpen(false);
-                      exportAsZip(source ?? '', exportTitle);
+                      void exportProjectAsZip({
+                        projectId,
+                        filePath: file.name,
+                        fallbackHtml: source ?? '',
+                        fallbackTitle: exportTitle,
+                      });
                     }}
                   >
                     <span className="share-menu-icon"><Icon name="download" size={14} /></span>
@@ -835,6 +1324,24 @@ function HtmlViewer({
                   >
                     <span className="share-menu-icon"><Icon name="file-code" size={14} /></span>
                     <span>{t('fileViewer.exportHtml')}</span>
+                  </button>
+                  {/* Export as Markdown — pass-through download of the
+                      artifact source with a `.md` extension. No conversion
+                      runs; the file body is identical to the Source view.
+                      Useful for piping the artifact into markdown-aware
+                      tooling (LLM context windows, vault apps). See
+                      issue #279. */}
+                  <button
+                    type="button"
+                    className="share-menu-item"
+                    role="menuitem"
+                    onClick={() => {
+                      setShareMenuOpen(false);
+                      exportAsMd(source ?? '', exportTitle);
+                    }}
+                  >
+                    <span className="share-menu-icon"><Icon name="file" size={14} /></span>
+                    <span>{t('fileViewer.exportMd')}</span>
                   </button>
                   <div className="share-menu-divider" />
                   <button
@@ -896,21 +1403,57 @@ function HtmlViewer({
         {source === null ? (
           <div className="viewer-empty">{t('fileViewer.loading')}</div>
         ) : mode === 'preview' ? (
-          <div
-            style={{
-              width: `${100 / previewScale}%`,
-              height: `${100 / previewScale}%`,
-              transform: `scale(${previewScale})`,
-              transformOrigin: '0 0',
-            }}
-          >
-            <iframe
-              ref={iframeRef}
-              data-testid="artifact-preview-frame"
-              title={file.name}
-              sandbox="allow-scripts"
-              srcDoc={srcDoc}
-            />
+          <div className="comment-preview-layer">
+            <div
+              style={{
+                width: `${100 / previewScale}%`,
+                height: `${100 / previewScale}%`,
+                transform: `scale(${previewScale})`,
+                transformOrigin: '0 0',
+              }}
+            >
+              <iframe
+                ref={iframeRef}
+                data-testid="artifact-preview-frame"
+                title={file.name}
+                sandbox="allow-scripts"
+                srcDoc={srcDoc}
+              />
+            </div>
+            {commentMode ? (
+              <CommentPreviewOverlays
+                comments={previewComments}
+                liveTargets={liveCommentTargets}
+                hoveredTarget={hoveredCommentTarget}
+                activeTarget={activeCommentTarget}
+                scale={previewScale}
+                onOpenComment={(comment, snapshot) => {
+                  setActiveCommentTarget(snapshot);
+                  setHoveredCommentTarget(snapshot);
+                  setCommentDraft(comment.note);
+                }}
+              />
+            ) : null}
+            {commentMode && activeCommentTarget ? (
+              <CommentPopover
+                target={activeCommentTarget}
+                existing={previewComments.find((comment) => comment.elementId === activeCommentTarget.elementId) ?? null}
+                draft={commentDraft}
+                onDraft={setCommentDraft}
+                onClose={() => setActiveCommentTarget(null)}
+                onSave={async (attach) => {
+                  if (!commentDraft.trim() || !onSavePreviewComment) return;
+                  const saved = await onSavePreviewComment(targetFromSnapshot(activeCommentTarget), commentDraft.trim(), attach);
+                  if (saved) setActiveCommentTarget(null);
+                }}
+                onRemove={async (commentId) => {
+                  if (!onRemovePreviewComment) return;
+                  await onRemovePreviewComment(commentId);
+                  setActiveCommentTarget(null);
+                }}
+                t={t}
+              />
+            ) : null}
           </div>
         ) : (
           <pre className="viewer-source">{source}</pre>
@@ -1088,6 +1631,109 @@ function HtmlViewer({
 function baseDirFor(fileName: string): string {
   const idx = fileName.lastIndexOf('/');
   return idx >= 0 ? fileName.slice(0, idx + 1) : '';
+}
+
+function hasRelativeAssetRefs(html: string): boolean {
+  const attr = /\s(?:src|href)\s*=\s*["']([^"']+)["']/gi;
+  let match: RegExpExecArray | null;
+  while ((match = attr.exec(html)) !== null) {
+    const value = match[1]?.trim();
+    if (!value) continue;
+    if (/^(?:https?:|data:|blob:|mailto:|tel:|#|\/)/i.test(value)) continue;
+    return true;
+  }
+  return false;
+}
+
+async function inlineRelativeAssets(
+  html: string,
+  projectId: string,
+  fileName: string,
+): Promise<string> {
+  const replacements: Array<Promise<{ from: string; to: string } | null>> = [];
+  const links = html.match(/<link\b[^>]*>/gi) ?? [];
+  for (const tag of links) {
+    const rel = readHtmlAttr(tag, 'rel');
+    const href = readHtmlAttr(tag, 'href');
+    if (!rel || !/\bstylesheet\b/i.test(rel) || !href) continue;
+    replacements.push(
+      fetchProjectRelativeText(projectId, fileName, href).then((css) =>
+        css == null
+          ? null
+          : {
+              from: tag,
+              to:
+                `<style data-od-inline-asset="${escapeHtmlAttr(href)}">\n` +
+                `${css.replace(/<\/style/gi, '<\\/style')}\n</style>`,
+            },
+      ),
+    );
+  }
+
+  const scripts = html.match(/<script\b[^>]*\bsrc\s*=\s*["'][^"']+["'][^>]*>\s*<\/script>/gi) ?? [];
+  for (const tag of scripts) {
+    const src = readHtmlAttr(tag, 'src');
+    if (!src) continue;
+    replacements.push(
+      fetchProjectRelativeText(projectId, fileName, src).then((js) => {
+        if (js == null) return null;
+        const open = tag.match(/^<script\b[^>]*>/i)?.[0] ?? '<script>';
+        const attrs = open
+          .replace(/^<script/i, '')
+          .replace(/>$/i, '')
+          .replace(/\ssrc\s*=\s*(['"])[\s\S]*?\1/i, '');
+        return {
+          from: tag,
+          to: `<script${attrs}>\n${js.replace(/<\/script/gi, '<\\/script')}\n</script>`,
+        };
+      }),
+    );
+  }
+
+  const resolved = (await Promise.all(replacements)).filter(
+    (item): item is { from: string; to: string } => item !== null,
+  );
+  return resolved.reduce((next, { from, to }) => next.replace(from, () => to), html);
+}
+
+async function fetchProjectRelativeText(
+  projectId: string,
+  ownerFileName: string,
+  assetRef: string,
+): Promise<string | null> {
+  const filePath = resolveProjectRelativePath(ownerFileName, assetRef);
+  if (!filePath) return null;
+  try {
+    const resp = await fetch(projectRawUrl(projectId, filePath));
+    if (!resp.ok) return null;
+    return await resp.text();
+  } catch {
+    return null;
+  }
+}
+
+function resolveProjectRelativePath(ownerFileName: string, assetRef: string): string | null {
+  if (/^(?:https?:|data:|blob:|mailto:|tel:|#|\/)/i.test(assetRef)) return null;
+  try {
+    const url = new URL(assetRef, `https://od.local/${baseDirFor(ownerFileName)}`);
+    if (url.origin !== 'https://od.local') return null;
+    return decodeURIComponent(url.pathname.replace(/^\/+/, ''));
+  } catch {
+    return null;
+  }
+}
+
+function readHtmlAttr(tag: string, name: string): string | null {
+  const match = tag.match(new RegExp(`\\s${name}\\s*=\\s*(['"])([\\s\\S]*?)\\1`, 'i'));
+  return match?.[2] ?? null;
+}
+
+function escapeHtmlAttr(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 }
 
 function ImageViewer({
