@@ -339,6 +339,7 @@ function renderProjectView() {
       config={config}
       agents={[{ id: 'agent-1', name: 'OpenCode', bin: 'opencode', available: true, models: [] }]}
       skills={[]}
+      designTemplates={[]}
       designSystems={[]}
       daemonLive
       onModeChange={() => {}}
