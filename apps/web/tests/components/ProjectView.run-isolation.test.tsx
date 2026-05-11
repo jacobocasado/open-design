@@ -25,6 +25,8 @@ const createConversation = vi.fn();
 const patchConversation = vi.fn();
 const patchProject = vi.fn();
 const saveTabs = vi.fn();
+const playSound = vi.fn();
+const showCompletionNotification = vi.fn();
 
 vi.mock('../../src/i18n', () => ({
   useT: () => (key: string) => key,
@@ -43,6 +45,12 @@ vi.mock('../../src/providers/daemon', () => ({
 
 vi.mock('../../src/providers/project-events', () => ({
   useProjectFileEvents: vi.fn(),
+}));
+
+vi.mock('../../src/utils/notifications', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/utils/notifications')>()),
+  playSound: (...args: unknown[]) => playSound(...args),
+  showCompletionNotification: (...args: unknown[]) => showCompletionNotification(...args),
 }));
 
 vi.mock('../../src/providers/registry', () => ({
@@ -98,10 +106,12 @@ vi.mock('../../src/components/ChatPane', () => ({
     onSelectConversation,
     onSend,
     onNewConversation,
+    error,
   }: {
     activeConversationId: string | null;
     conversations: Conversation[];
     streaming: boolean;
+    error: string | null;
     onSelectConversation: (id: string) => void;
     onSend: (prompt: string, attachments: unknown[], commentAttachments: unknown[]) => void;
     onNewConversation: () => void;
@@ -109,6 +119,7 @@ vi.mock('../../src/components/ChatPane', () => ({
     <section>
       <output data-testid="active-conversation">{activeConversationId}</output>
       <output data-testid="streaming-state">{streaming ? 'streaming' : 'idle'}</output>
+      <output data-testid="chat-error">{error}</output>
       {conversations.map((conversation) => (
         <button
           key={conversation.id}
@@ -142,6 +153,12 @@ const config: AppConfig = {
   agentModels: {},
   skillId: null,
   designSystemId: null,
+  notifications: {
+    soundEnabled: true,
+    successSoundId: 'success-sound',
+    failureSoundId: 'failure-sound',
+    desktopEnabled: false,
+  },
 };
 
 const project: Project = {
@@ -175,14 +192,23 @@ const runningAssistant: ChatMessage = {
   runStatus: 'running',
 };
 
+const succeededAssistant: ChatMessage = {
+  ...runningAssistant,
+  content: 'done',
+  runStatus: 'succeeded',
+  endedAt: 2,
+};
+
 describe('ProjectView conversation run isolation', () => {
   let resolveConversationBMessages: ((messages: ChatMessage[]) => void) | null = null;
+  let conversationAMessages: ChatMessage[] = [runningAssistant];
 
   beforeEach(() => {
     resolveConversationBMessages = null;
+    conversationAMessages = [runningAssistant];
     listConversations.mockResolvedValue(conversations);
     listMessages.mockImplementation(async (_projectId: string, conversationId: string) => {
-      if (conversationId === 'conv-a') return [runningAssistant];
+      if (conversationId === 'conv-a') return conversationAMessages;
       if (conversationId === 'conv-b') {
         return new Promise<ChatMessage[]>((resolve) => {
           resolveConversationBMessages = resolve;
@@ -257,6 +283,51 @@ describe('ProjectView conversation run isolation', () => {
     fireEvent.click(screen.getByTestId('new-conversation'));
 
     expect(createConversation).toHaveBeenCalledTimes(1);
+  });
+
+  it('notifies when a detached active run is terminal after returning to its conversation', async () => {
+    renderProjectView();
+
+    await waitFor(() => expect(screen.getByTestId('active-conversation').textContent).toBe('conv-a'));
+    await waitFor(() => expect(screen.getByTestId('streaming-state').textContent).toBe('streaming'));
+
+    fireEvent.click(screen.getByTestId('conversation-select-conv-b'));
+    await waitFor(() => expect(screen.getByTestId('active-conversation').textContent).toBe('conv-b'));
+    if (!resolveConversationBMessages) throw new Error('Expected conv-b message load to be pending');
+    resolveConversationBMessages([]);
+    await waitFor(() => expect(screen.getByTestId('streaming-state').textContent).toBe('idle'));
+
+    conversationAMessages = [succeededAssistant];
+    fireEvent.click(screen.getByTestId('conversation-select-conv-a'));
+
+    await waitFor(() => expect(playSound).toHaveBeenCalledWith('success-sound'));
+    expect(showCompletionNotification).not.toHaveBeenCalled();
+  });
+
+  it('surfaces conversation message load errors and unblocks send retry', async () => {
+    listMessages.mockImplementation(async (_projectId: string, conversationId: string) => {
+      if (conversationId === 'conv-a') return [];
+      if (conversationId === 'conv-b') throw new Error('messages unavailable');
+      return [];
+    });
+
+    renderProjectView();
+
+    await waitFor(() => expect(screen.getByTestId('active-conversation').textContent).toBe('conv-a'));
+    fireEvent.click(screen.getByTestId('conversation-select-conv-b'));
+
+    await waitFor(() => expect(screen.getByTestId('chat-error').textContent).toBe('messages unavailable'));
+    await waitFor(() => expect(screen.getByTestId('streaming-state').textContent).toBe('idle'));
+
+    fireEvent.click(screen.getByTestId('send-message'));
+
+    await waitFor(() => expect(streamViaDaemon).toHaveBeenCalledTimes(1));
+    expect(streamViaDaemon).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: 'project-1',
+        conversationId: 'conv-b',
+      }),
+    );
   });
 });
 

@@ -350,10 +350,8 @@ export function ProjectView({
     activeConversationId && messagesConversationId !== activeConversationId,
   );
   const currentConversationBusy = currentConversationLoading || streaming || currentConversationHasActiveRun;
-
-  useEffect(() => {
-    setStreaming(false);
-  }, [project.id, activeConversationId]);
+  const activeCompletionNotificationRunsRef = useRef<Set<string>>(new Set());
+  const completedNotificationRunsRef = useRef<Set<string>>(new Set());
 
   // Load conversations on project switch. If none exist (older projects
   // pre-conversations, or a freshly created one whose default seed got
@@ -417,6 +415,7 @@ export function ProjectView({
       setAttachedComments([]);
       setMessagesConversationId(null);
       messagesConversationIdRef.current = null;
+      setStreaming(false);
       return;
     }
     let cancelled = false;
@@ -431,20 +430,36 @@ export function ProjectView({
       messagesConversationIdRef.current = null;
     }
     (async () => {
-      const [list, comments] = await Promise.all([
-        listMessages(project.id, activeConversationId),
-        fetchPreviewComments(project.id, activeConversationId),
-      ]);
-      if (cancelled) return;
-      setMessages(list);
-      setPreviewComments(comments);
-      setAttachedComments([]);
-      setArtifact(null);
-      setError(null);
-      savedArtifactRef.current = null;
-      pendingWritesRef.current.clear();
-      messagesConversationIdRef.current = activeConversationId;
-      setMessagesConversationId(activeConversationId);
+      try {
+        const [list, comments] = await Promise.all([
+          listMessages(project.id, activeConversationId),
+          fetchPreviewComments(project.id, activeConversationId),
+        ]);
+        if (cancelled) return;
+        setMessages(list);
+        setPreviewComments(comments);
+        setAttachedComments([]);
+        setArtifact(null);
+        setError(null);
+        setStreaming(false);
+        savedArtifactRef.current = null;
+        pendingWritesRef.current.clear();
+        messagesConversationIdRef.current = activeConversationId;
+        setMessagesConversationId(activeConversationId);
+      } catch (err) {
+        if (cancelled) return;
+        const message = err instanceof Error ? err.message : 'Could not load messages for this conversation.';
+        setMessages([]);
+        setPreviewComments([]);
+        setAttachedComments([]);
+        setArtifact(null);
+        setError(message);
+        setStreaming(false);
+        savedArtifactRef.current = null;
+        pendingWritesRef.current.clear();
+        messagesConversationIdRef.current = activeConversationId;
+        setMessagesConversationId(activeConversationId);
+      }
     })();
     return () => {
       cancelled = true;
@@ -492,27 +507,13 @@ export function ProjectView({
     reattachTextBuffersRef.current.clear();
   }, []);
 
-  // Detect the streaming `true → false` edge so we can fire the optional
-  // completion sound / desktop notification exactly once per turn. Initial
-  // mount keeps `prevStreamingRef.current = false`, so loading historical
-  // conversations (where `streaming` is also false) never triggers a stray
-  // ding. `messages` is on the dep array so the latest assistant message's
-  // runStatus is visible at the moment we edge-detect; the early-return
-  // guarantees only the edge actually does anything.
-  const prevStreamingRef = useRef(false);
-  useEffect(() => {
-    const wasStreaming = prevStreamingRef.current;
-    prevStreamingRef.current = streaming;
-    if (!(wasStreaming && !streaming)) return;
-
+  const notifyCompletedRun = useCallback((last: ChatMessage) => {
     // Round 7 (mrcfps @ useDesignMdState.ts:131): a chat turn just
     // settled — conversation updatedAt almost certainly moved, so
     // recompute DESIGN.md staleness even when the turn produced no
     // file mutations or live artifacts.
     setDesignMdRefreshKey((n) => n + 1);
 
-    const last = [...messages].reverse().find((m) => m.role === 'assistant');
-    if (!last) return;
     const status = last.runStatus;
     if (status !== 'succeeded' && status !== 'failed') return;
 
@@ -546,7 +547,30 @@ export function ProjectView({
         });
       }
     }
-  }, [streaming, messages, config.notifications, t]);
+  }, [config.notifications, t]);
+
+  // Fire completion feedback from assistant run-status transitions rather than
+  // from the local SSE listener state. A run can finish while its conversation
+  // is detached; when the user returns, the terminal status should still produce
+  // the one completion notification for runs this view previously saw active.
+  useEffect(() => {
+    const completedMessages: ChatMessage[] = [];
+    for (const message of messages) {
+      if (message.role !== 'assistant') continue;
+      const keys = message.runId ? [message.runId, message.id] : [message.id];
+      if (isActiveRunStatus(message.runStatus)) {
+        for (const key of keys) activeCompletionNotificationRunsRef.current.add(key);
+        continue;
+      }
+      if (message.runStatus !== 'succeeded' && message.runStatus !== 'failed') continue;
+      if (!keys.some((key) => activeCompletionNotificationRunsRef.current.has(key))) continue;
+      if (keys.some((key) => completedNotificationRunsRef.current.has(key))) continue;
+      for (const key of keys) completedNotificationRunsRef.current.add(key);
+      completedMessages.push(message);
+    }
+
+    for (const message of completedMessages) notifyCompletedRun(message);
+  }, [messages, notifyCompletedRun]);
 
   // Hydrate the open-tabs state once per project. After this initial
   // load, every mutation flows through saveTabsState() which keeps DB +
