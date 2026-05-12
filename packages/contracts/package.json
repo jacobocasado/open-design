@@ -37,6 +37,10 @@
     "./critique": {
       "types": "./dist/critique.d.ts",
       "default": "./dist/critique.mjs"
+    },
+    "./analytics": {
+      "types": "./dist/analytics/index.d.ts",
+      "default": "./dist/analytics/index.mjs"
     }
   },
   "scripts": {

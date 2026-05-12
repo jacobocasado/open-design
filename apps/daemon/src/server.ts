@@ -77,6 +77,11 @@ import { renderDesignSystemShowcase } from './design-system-showcase.js';
 import { createChatRunService } from './runs.js';
 import { reportRunCompletedFromDaemon } from './langfuse-bridge.js';
 import {
+  createAnalyticsService,
+  readAnalyticsContext,
+  readPublicConfigResponse,
+} from './analytics.js';
+import {
   redactSecrets,
   testAgentConnection,
   testProviderConnection,
@@ -2607,9 +2612,17 @@ export async function startServer({
     }
   });
 
+  const analyticsService = createAnalyticsService();
   const design = {
     runs: createChatRunService({ createSseResponse, createSseErrorPayload }),
+    analytics: analyticsService,
+    getAppVersion: () => cachedAppVersion?.version ?? '0.0.0',
+    readAnalyticsContext,
   };
+
+  app.get('/api/analytics/config', (_req, res) => {
+    res.json(readPublicConfigResponse());
+  });
 
   // Tracks runs whose completion has already been forwarded to Langfuse so
   // repeated message updates only emit one trace per run.
@@ -4557,6 +4570,7 @@ export async function startServer({
       daemonShutdownStarted = true;
       daemonShuttingDown = true;
       await design.runs.shutdownActive({ graceMs: resolveChatRunShutdownGraceMs() });
+      await design.analytics.shutdown();
     };
     let server;
     try {
