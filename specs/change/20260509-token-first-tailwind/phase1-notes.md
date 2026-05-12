@@ -6,11 +6,17 @@
 
 - Tailwind no-Preflight setup must use the official layered CSS imports in `apps/web/src/index.css`:
   ```css
-  @layer theme, utilities;
+  @layer theme, base, utilities;
   @import "tailwindcss/theme.css" layer(theme);
   @import "tailwindcss/utilities.css" layer(utilities);
+
+  @layer base {
+    *, ::before, ::after, ::backdrop, ::file-selector-button {
+      border: 0 solid;
+    }
+  }
   ```
-- Keep Preflight excluded in Phase 1 and retain the project-owned border reset from Tailwind's Preflight contract so `border border-*` token utilities render solid borders.
+- Keep Preflight excluded in Phase 1 and retain the project-owned border reset from Tailwind's Preflight contract in the base layer so `border border-*` token utilities render solid borders from the later utilities layer.
 
 ## Verification
 
