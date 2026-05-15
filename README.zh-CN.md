@@ -3,7 +3,7 @@
 > [!IMPORTANT]
 > ### 🔥 `0.8.0-preview` 已发布。设计的旧世界，到此为止。
 >
-> 开源、agent-native 的 Figma 替代品 —— 上线两周，40k stars 在身，且仍在加速。**剩下的路，需要你和我们一起推完。**
+> 开源、agent-native 的 Claude Design / Figma 替代品 —— 上线两周，40k stars 在身，且仍在加速。**剩下的路，需要你和我们一起推完。**
 >
 > **正在 `main` 分支飞速迭代中** —— 0.8.0 是 Open Design 的下一阶段。提一个 PR、扔一个想法、报一个 bug —— 你带来的，就是这场运动接下来的样子。
 >

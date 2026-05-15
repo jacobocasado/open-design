@@ -3,7 +3,7 @@
 > [!IMPORTANT]
 > ### 🔥 `0.8.0-preview` ist da. Hier endet die alte Welt des Designs.
 >
-> Eine Open-Source-, agent-native Alternative zu Figma — 40k Sterne in zwei Wochen haben uns hierher gebracht. **Wir brauchen dich für den Rest des Weges.**
+> Eine Open-Source-, agent-native Alternative zu Claude Design / Figma — 40k Sterne in zwei Wochen haben uns hierher gebracht. **Wir brauchen dich für den Rest des Weges.**
 >
 > **Schnelle Iteration auf `main`** — 0.8.0 ist die nächste Phase von Open Design. Schick einen PR, wirf eine wilde Idee rein, melde einen Bug — was du mitbringst, dazu wird diese Bewegung.
 >
