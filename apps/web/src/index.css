@@ -916,7 +916,8 @@ code {
   margin-right: var(--app-chrome-traffic-margin);
 }
 .app-chrome-back,
-.settings-icon-btn {
+.settings-icon-btn,
+.project-settings-trigger {
   width: 32px;
   height: 32px;
   padding: 0;
@@ -929,7 +930,8 @@ code {
   flex-shrink: 0;
 }
 .app-chrome-back:hover:not(:disabled),
-.settings-icon-btn:hover:not(:disabled) {
+.settings-icon-btn:hover:not(:disabled),
+.project-settings-trigger:hover:not(:disabled) {
   background: var(--bg-subtle);
   border-color: var(--border);
   color: var(--text);

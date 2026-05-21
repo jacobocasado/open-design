@@ -3609,21 +3609,21 @@ export function ProjectView({
               <button
                 ref={projectSettingsTriggerRef}
                 type="button"
-                className="settings-icon-btn"
+                className="project-settings-trigger"
                 data-testid="project-settings-trigger"
-                title={t('settings.title')}
-                aria-label={t('settings.title')}
+                title={t('designs.menuMore')}
+                aria-label={t('designs.menuMore')}
                 aria-haspopup="dialog"
                 aria-expanded={projectSettingsOpen}
                 onClick={() => setProjectSettingsOpen((open) => !open)}
               >
-                <Icon name="settings" size={16} />
+                <Icon name="tweaks" size={16} />
               </button>
               {projectSettingsOpen ? (
                 <div
                   className="project-settings-popover"
                   role="dialog"
-                  aria-label={t('settings.title')}
+                  aria-label={t('designs.menuMore')}
                 >
                   <button
                     type="button"
