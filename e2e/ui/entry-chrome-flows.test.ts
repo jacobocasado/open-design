@@ -142,15 +142,15 @@ test('entry chrome exposes the primary home creation surface and settings entry'
   await expect(page.getByTestId('home-hero-input')).toBeVisible();
   await expect(page.getByTestId('home-hero-attach')).toBeVisible();
   await expect(page.getByTestId('home-hero-submit')).toBeDisabled();
-  const createToolbar = page.getByRole('toolbar', { name: /pick a project category or starter shortcut/i });
-  await expect(createToolbar).toBeVisible();
-  await expect(createToolbar.getByRole('button', { name: /prototype/i })).toBeVisible();
-  await expect(createToolbar.getByRole('button', { name: /live artifact/i })).toBeVisible();
-  await expect(createToolbar.getByRole('button', { name: /slide deck/i })).toBeVisible();
-  await expect(createToolbar.getByRole('button', { name: /image/i })).toBeVisible();
-  await expect(createToolbar.getByRole('button', { name: /video/i })).toBeVisible();
-  await expect(createToolbar.getByRole('button', { name: /hyperframes/i })).toBeVisible();
-  await expect(createToolbar.getByRole('button', { name: /audio/i })).toBeVisible();
+  const createTabs = page.getByTestId('home-hero-type-tabs');
+  await expect(createTabs).toBeVisible();
+  await expect(page.getByTestId('home-hero-rail-prototype')).toBeVisible();
+  await expect(page.getByTestId('home-hero-rail-live-artifact')).toBeVisible();
+  await expect(page.getByTestId('home-hero-rail-deck')).toBeVisible();
+  await expect(page.getByTestId('home-hero-rail-image')).toBeVisible();
+  await expect(page.getByTestId('home-hero-rail-video')).toBeVisible();
+  await expect(page.getByTestId('home-hero-rail-hyperframes')).toBeVisible();
+  await expect(page.getByTestId('home-hero-rail-audio')).toBeVisible();
 
   // The pet picker rail was removed; pet adoption now lives in
   // Settings → Pet exclusively. Make sure no rail leaks back into the
@@ -581,7 +581,7 @@ test('home starters search and facet filters narrow the visible gallery', async 
   await expect(page.locator('[data-plugin-id="figma-importer"]')).toHaveCount(0);
 });
 
-test('home sparse starter lanes surface the contribution card and can jump into plugin creation', async ({ page }) => {
+test('home starters can jump into plugin creation through the registry browse flow', async ({ page }) => {
   await page.route('**/api/plugins', async (route) => {
     await route.fulfill({
       json: {
@@ -591,9 +591,10 @@ test('home sparse starter lanes surface the contribution card and can jump into 
   });
 
   await gotoEntryHome(page);
-  await page.getByTestId('plugins-home-pill-category-import').click();
-  await expect(page.getByTestId('plugins-home-contribution-card')).toBeVisible();
-  await page.getByTestId('plugins-home-contribution-create').click();
+  await page.getByTestId('plugins-home-browse-registry').click();
+  await expect(page).toHaveURL(/\/plugins$/);
+  await expect(page.locator('h1').filter({ hasText: 'Plugins' })).toBeVisible();
+  await page.getByTestId('plugins-create-button').click();
 
   await expect(page.getByTestId('home-hero-input')).toHaveValue(/Create an Open Design plugin/i);
 });
