@@ -1699,16 +1699,28 @@ function buildCommandShellCommand(command, args) {
   return [command, ...args].map(quotePosixShellArg).join(' ');
 }
 
+function buildLoginShellCommand(innerCommand) {
+  // Use a non-login shell and re-export PATH so test fakes and agent wrappers
+  // remain visible; login shells often reset PATH from profile scripts.
+  return `export PATH=${quotePosixShellArg(process.env.PATH ?? '')}; ${innerCommand}`;
+}
+
 function execGhBuffered(args, opts = {}) {
   if (process.platform === 'win32') return execFileBuffered('gh', args, opts);
   const shell = process.env.SHELL && process.env.SHELL.trim() ? process.env.SHELL.trim() : '/bin/zsh';
-  return execFileBuffered(shell, ['-lc', buildGhShellCommand(args)], opts);
+  return execFileBuffered(shell, ['-c', buildLoginShellCommand(buildGhShellCommand(args))], {
+    env: process.env,
+    ...opts,
+  });
 }
 
 function execCommandViaLoginShell(command, args, opts = {}) {
   if (process.platform === 'win32') return execFileBuffered(command, args, opts);
   const shell = process.env.SHELL && process.env.SHELL.trim() ? process.env.SHELL.trim() : '/bin/zsh';
-  return execFileBuffered(shell, ['-lc', buildCommandShellCommand(command, args)], opts);
+  return execFileBuffered(shell, ['-c', buildLoginShellCommand(buildCommandShellCommand(command, args))], {
+    env: process.env,
+    ...opts,
+  });
 }
 
 async function readProjectPluginManifest(folder) {

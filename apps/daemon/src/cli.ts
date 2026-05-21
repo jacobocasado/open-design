@@ -1271,16 +1271,23 @@ function buildGhShellCommand(args) {
   return ['gh', ...args].map(quotePosixShellArg).join(' ');
 }
 
+function buildLoginShellCommand(innerCommand) {
+  return `export PATH=${quotePosixShellArg(process.env.PATH ?? '')}; ${innerCommand}`;
+}
+
 async function execGhBuffered(args, opts = {}) {
   if (process.platform === 'win32') return execFileBuffered('gh', args, opts);
   const shell = process.env.SHELL && process.env.SHELL.trim() ? process.env.SHELL.trim() : '/bin/zsh';
-  return execFileBuffered(shell, ['-lc', buildGhShellCommand(args)], opts);
+  return execFileBuffered(shell, ['-c', buildLoginShellCommand(buildGhShellCommand(args))], {
+    env: process.env,
+    ...opts,
+  });
 }
 
-async function spawnPassthrough(command, args) {
+async function spawnPassthrough(command, args, opts = {}) {
   const { spawn } = await import('node:child_process');
   return await new Promise((resolve) => {
-    const child = spawn(command, args, { stdio: 'inherit' });
+    const child = spawn(command, args, { stdio: 'inherit', ...opts });
     child.on('error', (error) => resolve({ code: 1, error }));
     child.on('close', (code) => resolve({ code }));
   });
@@ -1289,7 +1296,9 @@ async function spawnPassthrough(command, args) {
 async function spawnGhPassthrough(args) {
   if (process.platform === 'win32') return spawnPassthrough('gh', args);
   const shell = process.env.SHELL && process.env.SHELL.trim() ? process.env.SHELL.trim() : '/bin/zsh';
-  return spawnPassthrough(shell, ['-lc', buildGhShellCommand(args)]);
+  return spawnPassthrough(shell, ['-c', buildLoginShellCommand(buildGhShellCommand(args))], {
+    env: process.env,
+  });
 }
 
 function inferGithubHost(target) {
