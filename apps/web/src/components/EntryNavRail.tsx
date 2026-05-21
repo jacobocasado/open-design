@@ -77,6 +77,7 @@ export function EntryNavRail({ view, onViewChange, onNewProject }: Props) {
             draggable={false}
           />
         </button>
+        <div className="entry-nav-rail__logo-divider" role="separator" aria-hidden="true" />
         <NavButton
           active={isHome}
           ariaLabel={homeLabel}

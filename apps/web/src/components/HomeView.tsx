@@ -1627,7 +1627,7 @@ function designSystemOptionsForHome(
 ): HomeDesignSystemOption[] {
   const selectable = systems.filter((system) => {
     if (!system.title) return false;
-    if (system.source === 'user') return (system.status ?? 'draft') === 'published';
+    if (system.source === 'user' || system.isEditable === true) return (system.status ?? 'draft') === 'published';
     return true;
   });
   const systemOptions = selectable

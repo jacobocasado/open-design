@@ -184,7 +184,10 @@ import { renderDesignSystemPreview } from './design-system-preview.js';
 import { renderDesignSystemShowcase } from './design-system-showcase.js';
 import { createChatRunService } from './runs.js';
 import { deriveRunErrorCode, runResultFromStatus } from './run-result.js';
-import { reportRunCompletedFromDaemon } from './langfuse-bridge.js';
+import {
+  reportRunCompletedFromDaemon,
+  reportRunFeedbackFromDaemon,
+} from './langfuse-bridge.js';
 import {
   createAnalyticsService,
   newInsertId,
@@ -1686,6 +1689,43 @@ function execFileBuffered(command, args, opts = {}) {
   });
 }
 
+function quotePosixShellArg(value) {
+  const text = String(value ?? '');
+  return `'${text.replace(/'/g, `'\\''`)}'`;
+}
+
+function buildGhShellCommand(args) {
+  return ['gh', ...args].map(quotePosixShellArg).join(' ');
+}
+
+function buildCommandShellCommand(command, args) {
+  return [command, ...args].map(quotePosixShellArg).join(' ');
+}
+
+function buildLoginShellCommand(innerCommand) {
+  // Use a non-login shell and re-export PATH so test fakes and agent wrappers
+  // remain visible; login shells often reset PATH from profile scripts.
+  return `export PATH=${quotePosixShellArg(process.env.PATH ?? '')}; ${innerCommand}`;
+}
+
+function execGhBuffered(args, opts = {}) {
+  if (process.platform === 'win32') return execFileBuffered('gh', args, opts);
+  const shell = process.env.SHELL && process.env.SHELL.trim() ? process.env.SHELL.trim() : '/bin/zsh';
+  return execFileBuffered(shell, ['-c', buildLoginShellCommand(buildGhShellCommand(args))], {
+    env: process.env,
+    ...opts,
+  });
+}
+
+function execCommandViaLoginShell(command, args, opts = {}) {
+  if (process.platform === 'win32') return execFileBuffered(command, args, opts);
+  const shell = process.env.SHELL && process.env.SHELL.trim() ? process.env.SHELL.trim() : '/bin/zsh';
+  return execFileBuffered(shell, ['-c', buildLoginShellCommand(buildCommandShellCommand(command, args))], {
+    env: process.env,
+    ...opts,
+  });
+}
+
 async function readProjectPluginManifest(folder) {
   const raw = await fs.promises.readFile(path.join(folder, 'open-design.json'), 'utf8');
   const manifest = JSON.parse(raw);
@@ -1830,7 +1870,7 @@ function shouldSkipPluginContextEntry(name) {
 }
 
 async function ensureGhReady() {
-  const version = await execFileBuffered('gh', ['--version'], { timeout: 10_000 });
+  const version = await execGhBuffered(['--version'], { timeout: 10_000 });
   if (!version.ok) {
     return {
       ok: false,
@@ -1840,7 +1880,7 @@ async function ensureGhReady() {
       log: [version.stderr || version.stdout || 'gh --version failed'],
     };
   }
-  const auth = await execFileBuffered('gh', ['auth', 'status', '--hostname', 'github.com'], { timeout: 10_000 });
+  const auth = await execGhBuffered(['auth', 'status', '--hostname', 'github.com'], { timeout: 10_000 });
   if (!auth.ok) {
     return {
       ok: false,
@@ -2693,8 +2733,10 @@ function sendMulterError(res, err) {
 }
 
 const mediaTasks = new Map();
+const pluginShareTasks = new Map();
 const TASK_TTL_AFTER_DONE_MS = 10 * 60 * 1000;
 const MEDIA_TERMINAL_STATUSES = new Set(['done', 'failed', 'interrupted']);
+const PLUGIN_SHARE_TERMINAL_STATUSES = new Set(['done', 'failed']);
 
 function hydrateMediaTask(row) {
   const task = {
@@ -2807,6 +2849,154 @@ function mediaTaskSnapshot(task, since = 0) {
     snapshot.error = task.error;
   }
   return snapshot;
+}
+
+function createPluginShareTask(taskId, projectId, info = {}) {
+  const task = {
+    id: taskId,
+    projectId,
+    status: 'queued',
+    action: info.action,
+    path: info.path,
+    progress: [],
+    result: null,
+    error: null,
+    startedAt: Date.now(),
+    endedAt: null,
+    waiters: new Set(),
+  };
+  pluginShareTasks.set(taskId, task);
+  return task;
+}
+
+function getLivePluginShareTask(taskId) {
+  return pluginShareTasks.get(taskId) ?? null;
+}
+
+function appendPluginShareTaskProgress(task, line) {
+  task.progress.push(String(line ?? ''));
+  notifyPluginShareTaskWaiters(task);
+}
+
+function notifyPluginShareTaskWaiters(task) {
+  const wakers = Array.from(task.waiters);
+  for (const w of wakers) {
+    try {
+      w();
+    } catch {
+      // Never let one bad waiter block the rest.
+    }
+  }
+  if (PLUGIN_SHARE_TERMINAL_STATUSES.has(task.status) && !task._gcScheduled) {
+    task._gcScheduled = true;
+    setTimeout(() => {
+      if (task.waiters.size === 0) {
+        pluginShareTasks.delete(task.id);
+      }
+    }, TASK_TTL_AFTER_DONE_MS).unref?.();
+  }
+}
+
+function pluginShareTaskSnapshot(task, since = 0) {
+  const snapshot = {
+    taskId: task.id,
+    action: task.action,
+    path: task.path,
+    status: task.status,
+    startedAt: task.startedAt,
+    endedAt: task.endedAt,
+    progress: task.progress.slice(since),
+    nextSince: task.progress.length,
+  };
+  if (task.status === 'done') snapshot.result = task.result;
+  if (task.status === 'failed') snapshot.error = task.error;
+  return snapshot;
+}
+
+function pluginShareActionToCli(action) {
+  if (action === 'publish-github') {
+    return {
+      argv: ['plugin', 'publish-repo'],
+      title: 'Publish repo',
+      command: 'od plugin publish-repo',
+      successMessage: 'Published plugin to GitHub.',
+      failureCode: 'publish-repo-failed',
+    };
+  }
+  return {
+    argv: ['plugin', 'open-design-pr'],
+    title: 'Open Design PR',
+    command: 'od plugin open-design-pr',
+    successMessage: 'Opened Open Design PR flow.',
+    failureCode: 'open-design-pr-failed',
+  };
+}
+
+function pluginShareProgressPlan(action) {
+  if (action === 'publish-github') {
+    return [
+      'Resolve GitHub owner and validate plugin metadata',
+      'Create or update the GitHub repository',
+      'Push plugin files',
+      'Return the repository URL',
+    ];
+  }
+  return [
+    'Ensure the Open Design fork exists',
+    'Clone the fork and prepare a branch',
+    'Copy the plugin into plugins/community',
+    'Push the branch and open the PR form',
+  ];
+}
+
+async function runPluginShareTask(task, folder) {
+  const share = pluginShareActionToCli(task.action);
+  appendPluginShareTaskProgress(task, `${share.title} started for ${task.path}`);
+  appendPluginShareTaskProgress(task, `$ ${share.command} ${task.path}`);
+  for (const step of pluginShareProgressPlan(task.action)) {
+    appendPluginShareTaskProgress(task, `- ${step}`);
+  }
+  const result = await execCommandViaLoginShell(OD_NODE_BIN, [
+    OD_BIN,
+    ...share.argv,
+    folder,
+    '--json',
+  ], { timeout: task.action === 'publish-github' ? 240_000 : 300_000 });
+  let payload = null;
+  try {
+    payload = result.stdout ? JSON.parse(result.stdout) : null;
+  } catch (error) {
+    payload = null;
+    appendPluginShareTaskProgress(task, `Failed to parse CLI JSON output: ${String(error?.message || error)}`);
+  }
+  const stepLog = payload?.steps?.map((step) => step.stderr || step.stdout || step.command).filter(Boolean) ?? [];
+  for (const line of stepLog) {
+    appendPluginShareTaskProgress(task, String(line).trim());
+  }
+  if (!result.ok || !payload?.ok) {
+    task.status = 'failed';
+    task.error = {
+      code: payload?.error?.label || share.failureCode,
+      message: payload?.error?.stderr || payload?.error?.stdout || result.stderr || result.stdout || `${share.title} failed.`,
+      log: stepLog.length > 0 ? stepLog : [result.stderr || result.stdout || `${share.command} failed`],
+    };
+    task.endedAt = Date.now();
+    notifyPluginShareTaskWaiters(task);
+    return;
+  }
+  const url = payload.repoUrl || payload.prUrl || undefined;
+  task.status = 'done';
+  task.result = {
+    message: url
+      ? (task.action === 'publish-github'
+          ? `Published plugin to ${url}.`
+          : `Opened Open Design PR flow at ${url}.`)
+      : share.successMessage,
+    ...(url ? { url } : {}),
+    log: stepLog,
+  };
+  task.endedAt = Date.now();
+  notifyPluginShareTaskWaiters(task);
 }
 
 export function createSseResponse(
@@ -4431,6 +4621,19 @@ export async function startServer({
     reportedRuns,
     getAppVersion: () => cachedAppVersion,
   });
+
+  const reportFeedback = (req: {
+    runId: string;
+    rating: 'positive' | 'negative';
+    reasonCodes: string[];
+    hasCustomReason: boolean;
+    customReason: string;
+    scoreMetadata?: Record<string, unknown>;
+  }) =>
+    reportRunFeedbackFromDaemon({
+      dataDir: RUNTIME_DATA_DIR,
+      ...req,
+    });
 
   // DNS-aware wrapper. The sync `validateBaseUrl` only inspects the literal
   // hostname string, so a public DNS name pointing at an internal address
@@ -8027,53 +8230,28 @@ export async function startServer({
       const relativePath = normalizeProjectPluginFolderPath(body.path);
       const projectRoot = resolveProjectDir(PROJECTS_DIR, req.params.id, project.metadata);
       const folder = await resolveProjectChildDirectory(projectRoot, relativePath);
-      const gh = await ensureGhReady();
-      if (!gh.ok) {
-        res.status(409).json(gh);
+      const result = await execCommandViaLoginShell(OD_NODE_BIN, [
+        OD_BIN,
+        'plugin',
+        'publish-repo',
+        folder,
+        '--json',
+      ], { timeout: 240_000 });
+      const payload = result.stdout ? JSON.parse(result.stdout) : null;
+      if (!result.ok || !payload?.ok) {
+        res.status(500).json({
+          ok: false,
+          code: payload?.error?.label || 'publish-repo-failed',
+          message: payload?.error?.stderr || payload?.error?.stdout || 'GitHub repo publish failed.',
+          log: payload?.steps?.map((step) => step.stderr || step.stdout || step.command).filter(Boolean) ?? [result.stderr || result.stdout || 'publish-repo failed'],
+        });
         return;
       }
-      const meta = await readProjectPluginManifest(folder);
-      const repoName = githubRepoNameFromPluginName(meta.name);
-      const tmp = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'od-plugin-publish-'));
-      const work = path.join(tmp, repoName);
-      await fs.promises.cp(folder, work, { recursive: true });
-      const log = [...(gh.log ?? [])];
-      for (const [cmd, args] of [
-        ['git', ['init']],
-        ['git', ['add', '.']],
-        ['git', ['-c', 'user.name=Open Design', '-c', 'user.email=open-design@example.invalid', 'commit', '-m', `Publish ${meta.title}`]],
-      ]) {
-        const result = await execFileBuffered(cmd, args, { cwd: work });
-        log.push(result.stdout || result.stderr);
-        if (!result.ok) {
-          await fs.promises.rm(tmp, { recursive: true, force: true }).catch(() => undefined);
-          res.status(500).json({ ok: false, code: `${cmd}-failed`, message: `${cmd} failed while preparing the plugin repository.`, log });
-          return;
-        }
-      }
-      const create = await execFileBuffered('gh', [
-        'repo',
-        'create',
-        repoName,
-        '--public',
-        '--source',
-        work,
-        '--push',
-      ], { cwd: work });
-      log.push(create.stdout || create.stderr);
-      if (!create.ok) {
-        await fs.promises.rm(tmp, { recursive: true, force: true }).catch(() => undefined);
-        res.status(500).json({ ok: false, code: 'gh-repo-create-failed', message: 'GitHub repo creation failed.', log });
-        return;
-      }
-      const view = await execFileBuffered('gh', ['repo', 'view', '--json', 'url', '--jq', '.url'], { cwd: work });
-      const url = view.ok && view.stdout ? view.stdout : undefined;
-      await fs.promises.rm(tmp, { recursive: true, force: true }).catch(() => undefined);
       res.json({
         ok: true,
-        message: url ? `Published ${meta.title} to ${url}.` : `Published ${meta.title} to GitHub.`,
-        ...(url ? { url } : {}),
-        log,
+        message: payload.repoUrl ? `Published plugin to ${payload.repoUrl}.` : 'Published plugin to GitHub.',
+        ...(payload.repoUrl ? { url: payload.repoUrl } : {}),
+        log: payload.steps?.map((step) => step.stderr || step.stdout || step.command).filter(Boolean) ?? [],
       });
     } catch (err) {
       res.status(400).json({ ok: false, message: String(err?.message || err), log: [] });
@@ -8091,107 +8269,124 @@ export async function startServer({
       const relativePath = normalizeProjectPluginFolderPath(body.path);
       const projectRoot = resolveProjectDir(PROJECTS_DIR, req.params.id, project.metadata);
       const folder = await resolveProjectChildDirectory(projectRoot, relativePath);
-      const gh = await ensureGhReady();
-      if (!gh.ok) {
-        res.status(409).json(gh);
-        return;
-      }
-      const meta = await readProjectPluginManifest(folder);
-      const repoName = githubRepoNameFromPluginName(meta.name);
-      const user = await execFileBuffered('gh', ['api', 'user', '--jq', '.login'], { timeout: 20_000 });
-      if (!user.ok || !user.stdout) {
-        res.status(409).json({
+      const result = await execCommandViaLoginShell(OD_NODE_BIN, [
+        OD_BIN,
+        'plugin',
+        'open-design-pr',
+        folder,
+        '--json',
+      ], { timeout: 300_000 });
+      const payload = result.stdout ? JSON.parse(result.stdout) : null;
+      if (!result.ok || !payload?.ok) {
+        res.status(500).json({
           ok: false,
-          code: 'gh-user-unavailable',
-          message: 'Could not read the authenticated GitHub user from gh.',
-          log: [...(gh.log ?? []), user.stderr || user.stdout],
+          code: payload?.error?.label || 'open-design-pr-failed',
+          message: payload?.error?.stderr || payload?.error?.stdout || 'Open Design PR creation failed.',
+          log: payload?.steps?.map((step) => step.stderr || step.stdout || step.command).filter(Boolean) ?? [result.stderr || result.stdout || 'open-design-pr failed'],
         });
-        return;
-      }
-      const login = user.stdout.trim();
-      const tmp = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'od-plugin-pr-'));
-      const work = path.join(tmp, 'open-design');
-      const branch = `plugin/${repoName}-${Date.now()}`;
-      const dest = path.join(work, 'plugins', 'community', repoName);
-      const bodyText = [
-        `Adds ${meta.title} as a community Open Design plugin.`,
-        '',
-        '## Source',
-        '',
-        `- Generated from project: ${project.id}`,
-        `- Manifest name: \`${meta.name}\``,
-        `- Version: \`${meta.version}\``,
-        '',
-        '## Checklist',
-        '',
-        '- [ ] Maintainer reviewed manifest metadata',
-        '- [ ] Maintainer verified plugin skill instructions',
-      ].join('\n');
-      const log = [...(gh.log ?? [])];
-      for (const [cmd, args, opts] of [
-        ['gh', ['repo', 'fork', 'nexu-io/open-design', '--remote=false'], { cwd: tmp }],
-        ['gh', ['repo', 'clone', 'nexu-io/open-design', work], { cwd: tmp }],
-        ['git', ['checkout', '-b', branch], { cwd: work }],
-        ['git', ['remote', 'add', 'fork', `https://github.com/${login}/open-design.git`], { cwd: work }],
-      ]) {
-        const result = await execFileBuffered(cmd, args, opts);
-        log.push(result.stdout || result.stderr);
-        const toleratedExistingFork =
-          cmd === 'gh' && args[0] === 'repo' && args[1] === 'fork' &&
-          /already exists|existing fork/i.test(String(result.stderr || result.stdout));
-        const toleratedExistingRemote =
-          cmd === 'git' && args[0] === 'remote' &&
-          /already exists/i.test(String(result.stderr || result.stdout));
-        if (!result.ok && !toleratedExistingFork && !toleratedExistingRemote) {
-          await fs.promises.rm(tmp, { recursive: true, force: true }).catch(() => undefined);
-          res.status(500).json({ ok: false, code: `${cmd}-failed`, message: `${cmd} failed while preparing the Open Design PR.`, log });
-          return;
-        }
-      }
-      await fs.promises.mkdir(path.dirname(dest), { recursive: true });
-      await fs.promises.cp(folder, dest, { recursive: true });
-      for (const [cmd, args] of [
-        ['git', ['add', `plugins/community/${repoName}`]],
-        ['git', ['-c', 'user.name=Open Design', '-c', 'user.email=open-design@example.invalid', 'commit', '-m', `Add ${meta.title} plugin`]],
-        ['git', ['push', '-u', 'fork', branch]],
-      ]) {
-        const result = await execFileBuffered(cmd, args, { cwd: work });
-        log.push(result.stdout || result.stderr);
-        if (!result.ok) {
-          await fs.promises.rm(tmp, { recursive: true, force: true }).catch(() => undefined);
-          res.status(500).json({ ok: false, code: `${cmd}-failed`, message: `${cmd} failed while preparing the Open Design PR.`, log });
-          return;
-        }
-      }
-      const pr = await execFileBuffered('gh', [
-        'pr',
-        'create',
-        '--repo',
-        'nexu-io/open-design',
-        '--head',
-        `${login}:${branch}`,
-        '--base',
-        'main',
-        '--title',
-        `Add ${meta.title} plugin`,
-        '--body',
-        bodyText,
-      ], { cwd: work });
-      log.push(pr.stdout || pr.stderr);
-      await fs.promises.rm(tmp, { recursive: true, force: true }).catch(() => undefined);
-      if (!pr.ok) {
-        res.status(500).json({ ok: false, code: 'gh-pr-create-failed', message: 'Open Design PR creation failed.', log });
         return;
       }
       res.json({
         ok: true,
-        message: `Created Open Design PR for ${meta.title}.`,
-        url: pr.stdout || undefined,
-        log,
+        message: payload.prUrl ? `Opened Open Design PR flow at ${payload.prUrl}.` : 'Opened Open Design PR flow.',
+        ...(payload.prUrl ? { url: payload.prUrl } : {}),
+        log: payload.steps?.map((step) => step.stderr || step.stdout || step.command).filter(Boolean) ?? [],
       });
     } catch (err) {
       res.status(400).json({ ok: false, message: String(err?.message || err), log: [] });
     }
+  });
+
+  app.post('/api/projects/:id/plugins/share-tasks', async (req, res) => {
+    if (!isLocalSameOrigin(req, resolvedPort)) {
+      return res.status(403).json({ error: 'cross-origin request rejected' });
+    }
+    try {
+      const project = getProject(db, req.params.id);
+      if (!project) {
+        sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'project not found');
+        return;
+      }
+      const body = req.body && typeof req.body === 'object' ? req.body : {};
+      const action = body.action === 'publish-github' || body.action === 'contribute-open-design'
+        ? body.action
+        : null;
+      if (!action) {
+        sendApiError(res, 400, 'BAD_REQUEST', 'plugin share action is required');
+        return;
+      }
+      const relativePath = normalizeProjectPluginFolderPath(body.path);
+      const projectRoot = resolveProjectDir(PROJECTS_DIR, req.params.id, project.metadata);
+      const folder = await resolveProjectChildDirectory(projectRoot, relativePath);
+      const taskId = randomUUID();
+      const task = createPluginShareTask(taskId, req.params.id, {
+        action,
+        path: relativePath,
+      });
+      task.status = 'running';
+      notifyPluginShareTaskWaiters(task);
+      void runPluginShareTask(task, folder).catch((err) => {
+        task.status = 'failed';
+        task.error = {
+          code: 'plugin-share-task-failed',
+          message: String(err?.message || err),
+          log: [String(err?.stack || err?.message || err)],
+        };
+        task.endedAt = Date.now();
+        notifyPluginShareTaskWaiters(task);
+      });
+      res.status(202).json({
+        taskId,
+        action,
+        path: relativePath,
+        status: task.status,
+        startedAt: task.startedAt,
+      });
+    } catch (err) {
+      const code = err && err.code;
+      const status = code === 'ENOENT' || code === 'ENOTDIR' ? 404 : 400;
+      sendApiError(
+        res,
+        status,
+        status === 404 ? 'PLUGIN_FOLDER_NOT_FOUND' : 'BAD_REQUEST',
+        String(err?.message || err),
+      );
+    }
+  });
+
+  app.post('/api/plugins/share-tasks/:id/wait', (req, res) => {
+    if (!isLocalSameOrigin(req, resolvedPort)) {
+      return res.status(403).json({ error: 'cross-origin request rejected' });
+    }
+    const task = getLivePluginShareTask(req.params.id);
+    if (!task) return res.status(404).json({ error: 'task not found' });
+
+    const since = Number.isFinite(req.body?.since) ? Number(req.body.since) : 0;
+    const requestedTimeout = Number.isFinite(req.body?.timeoutMs)
+      ? Number(req.body.timeoutMs)
+      : 25_000;
+    const timeoutMs = Math.min(Math.max(requestedTimeout, 0), 25_000);
+
+    const respond = () => {
+      if (res.writableEnded) return;
+      res.json(pluginShareTaskSnapshot(task, since));
+    };
+
+    if (PLUGIN_SHARE_TERMINAL_STATUSES.has(task.status) || task.progress.length > since) {
+      return respond();
+    }
+
+    let resolved = false;
+    const wake = () => {
+      if (resolved) return;
+      resolved = true;
+      task.waiters.delete(wake);
+      clearTimeout(timer);
+      respond();
+    };
+    task.waiters.add(wake);
+    const timer = setTimeout(wake, timeoutMs);
+    res.on('close', wake);
   });
 
   app.get('/api/projects/:id/search', async (req, res) => {
@@ -11591,7 +11786,7 @@ export async function startServer({
     critique: critiqueDeps,
     validation: validationDeps,
     lifecycle: { isDaemonShuttingDown: () => daemonShuttingDown },
-
+    telemetry: { reportFinalizedMessage, reportFeedback },
   });
 
   registerStaticSpaFallback(app, STATIC_DIR);

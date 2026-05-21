@@ -77,6 +77,13 @@
   margin: 3px 0;
   flex-shrink: 0;
 }
+.entry-nav-rail__logo-divider {
+  width: 24px;
+  height: 1px;
+  background: var(--border);
+  margin: 5px 0 9px;
+  flex-shrink: 0;
+}
 
 /* ---------- Right-side hover tooltip (rail items only) ----------
    The rail is icon-only, so each button advertises its label via a

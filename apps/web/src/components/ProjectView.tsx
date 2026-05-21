@@ -19,9 +19,11 @@ import {
   listActiveChatRuns,
   listProjectRuns,
   reattachDaemonRun,
+  reportChatRunFeedback,
   streamViaDaemon,
 } from '../providers/daemon';
 import { fetchElevenLabsVoiceOptions } from '../providers/elevenlabs-voices';
+import { normalizeCustomReason } from '@open-design/contracts/analytics';
 import {
   deletePreviewComment,
   fetchPreviewComments,
@@ -76,14 +78,17 @@ import {
   deleteConversation as deleteConversationApi,
   fetchAppliedPluginSnapshot,
   getTemplate,
+  installGeneratedPluginFolder,
   listConversations,
   listMessages,
   loadTabs,
   patchConversation,
   patchProject,
   saveMessage,
+  startGeneratedPluginShareTask,
   saveTabs,
   type SaveMessageOptions,
+  waitGeneratedPluginShareTask,
 } from '../state/projects';
 import type { AppliedPluginSnapshot } from '@open-design/contracts';
 import type {
@@ -129,7 +134,6 @@ import { decideAutoOpenAfterWrite } from './auto-open-file';
 import { FileWorkspace } from './FileWorkspace';
 import { Icon } from './Icon';
 import {
-  buildPluginFolderAgentActionPrompt,
   type PluginFolderAgentAction,
 } from './design-files/pluginFolderActions';
 import { CenteredLoader } from './Loading';
@@ -485,6 +489,9 @@ export function ProjectView({
   const [conversationLoadError, setConversationLoadError] = useState<string | null>(null);
   const [messageLoadRetryNonce, setMessageLoadRetryNonce] = useState(0);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [activePluginActionPaths, setActivePluginActionPaths] = useState<Set<string>>(() => new Set());
+  const [hiddenAssistantPluginActionPaths, setHiddenAssistantPluginActionPaths] = useState<Set<string>>(() => new Set());
+  const [forceStreamingPluginMessageIds, setForceStreamingPluginMessageIds] = useState<Set<string>>(() => new Set());
   // True once the initial DB read for the active conversation has settled.
   // Auto-send gates on this so it can't fire before listMessages resolves and
   // race-clobber the freshly-pushed user + assistant placeholder. Without
@@ -1419,6 +1426,42 @@ export function ProjectView({
     [project.id, activeConversationId],
   );
 
+  const appendConversationMessage = useCallback(
+    (
+      conversationId: string,
+      message: ChatMessage,
+      options?: SaveMessageOptions,
+      persist = true,
+    ) => {
+      if (
+        activeConversationId === conversationId
+        || messagesConversationIdRef.current === conversationId
+      ) {
+        setMessages((curr) => [...curr, message]);
+      }
+      if (persist) void saveMessage(project.id, conversationId, message, options);
+    },
+    [activeConversationId, project.id],
+  );
+
+  const replaceConversationMessage = useCallback(
+    (
+      conversationId: string,
+      message: ChatMessage,
+      options?: SaveMessageOptions,
+      persist = true,
+    ) => {
+      if (
+        activeConversationId === conversationId
+        || messagesConversationIdRef.current === conversationId
+      ) {
+        setMessages((curr) => curr.map((item) => (item.id === message.id ? message : item)));
+      }
+      if (persist) void saveMessage(project.id, conversationId, message, options);
+    },
+    [activeConversationId, project.id],
+  );
+
   const markStreamingConversation = useCallback((conversationId: string) => {
     streamingConversationIdRef.current = conversationId;
     setStreaming(true);
@@ -1475,8 +1518,25 @@ export function ProjectView({
               },
         true,
       );
+      // Forward affirmative ratings to the daemon → Langfuse `score-create`.
+      // Clears (change=null) are skipped — Langfuse scores are append-only,
+      // and the rating is also captured by the PostHog event so a clear is
+      // recoverable downstream if we ever need it.
+      const runId = assistantMessage.runId;
+      if (change && runId && activeConversationId) {
+        void reportChatRunFeedback({
+          runId,
+          projectId: project.id,
+          conversationId: activeConversationId,
+          assistantMessageId: assistantMessage.id,
+          rating: change.rating,
+          reasonCodes: change.reasonCodes ?? [],
+          hasCustomReason: !!change.customReason,
+          customReason: normalizeCustomReason(change.customReason),
+        });
+      }
     },
-    [updateMessageById],
+    [updateMessageById, activeConversationId, project.id],
   );
 
   const appendAssistantErrorEvent = useCallback(
@@ -2605,13 +2665,266 @@ export function ProjectView({
     [currentConversationActionDisabled, handleSend],
   );
 
+  const selectedPluginActionAgent =
+    config.mode === 'daemon' && config.agentId
+      ? agentsById.get(config.agentId)
+      : null;
+  const selectedPluginActionChoice =
+    config.mode === 'daemon' && config.agentId
+      ? config.agentModels?.[config.agentId]
+      : undefined;
+  const pluginWorkflowAgentName =
+    config.mode === 'daemon'
+      ? agentModelDisplayName(
+          config.agentId,
+          selectedPluginActionAgent?.name,
+          selectedPluginActionChoice?.model,
+        )
+      : apiProtocolModelLabel(config.apiProtocol, config.model);
+
   const handlePluginFolderAgentAction = useCallback(
-    (relativePath: string, action: PluginFolderAgentAction) => {
-      if (currentConversationActionDisabled) return;
-      const prompt = buildPluginFolderAgentActionPrompt(relativePath, action);
-      void handleSend(prompt, [], []);
+    async (relativePath: string, action: PluginFolderAgentAction) => {
+      if (currentConversationActionDisabled || !activeConversationId) return;
+      setHiddenAssistantPluginActionPaths((prev) => new Set(prev).add(relativePath));
+      if (action === 'install') {
+        setActivePluginActionPaths((prev) => new Set(prev).add(relativePath));
+        let outcome;
+        try {
+          outcome = await installGeneratedPluginFolder(project.id, relativePath);
+        } finally {
+          setActivePluginActionPaths((prev) => {
+            const next = new Set(prev);
+            next.delete(relativePath);
+            return next;
+          });
+          setHiddenAssistantPluginActionPaths((prev) => {
+            const next = new Set(prev);
+            next.delete(relativePath);
+            return next;
+          });
+        }
+        if (!outcome.ok) throw new Error(outcome.message);
+        return { message: outcome.message };
+      }
+      const conversationId = activeConversationId;
+      const shareAction = action === 'publish' ? 'publish-github' : 'contribute-open-design';
+      setActivePluginActionPaths((prev) => new Set(prev).add(relativePath));
+      let taskStart;
+      try {
+        taskStart = await startGeneratedPluginShareTask(project.id, relativePath, shareAction);
+      } catch (error) {
+        setActivePluginActionPaths((prev) => {
+          const next = new Set(prev);
+          next.delete(relativePath);
+          return next;
+        });
+        setHiddenAssistantPluginActionPaths((prev) => {
+          const next = new Set(prev);
+          next.delete(relativePath);
+          return next;
+        });
+        throw error;
+      }
+      const startedAt = taskStart.startedAt;
+      const messageId = randomUUID();
+      const updateConversationLatestRun = (
+        status: NonNullable<ChatMessage['runStatus']>,
+        endedAt?: number,
+      ) => {
+        setConversations((curr) =>
+          curr.map((conversation) =>
+            conversation.id === conversationId
+              ? {
+                  ...conversation,
+                  updatedAt: endedAt ?? startedAt,
+                  latestRun: {
+                    status,
+                    startedAt,
+                    ...(endedAt === undefined
+                      ? {}
+                      : {
+                          endedAt,
+                          durationMs: Math.max(0, endedAt - startedAt),
+                        }),
+                  },
+                }
+              : conversation,
+          ),
+        );
+      };
+      const progressMessage: ChatMessage = {
+        id: messageId,
+        role: 'assistant',
+        content: pluginWorkflowStartContent(action, relativePath),
+        agentName: pluginWorkflowAgentName,
+        events: pluginWorkflowPlannedEvents(action, relativePath),
+        createdAt: startedAt,
+        startedAt,
+        runStatus: 'running',
+      };
+      setForceStreamingPluginMessageIds((prev) => new Set(prev).add(messageId));
+      appendConversationMessage(conversationId, progressMessage, undefined, false);
+      updateConversationLatestRun('running');
+      void (async () => {
+        let since = 0;
+        let liveEvents = [...pluginWorkflowPlannedEvents(action, relativePath)];
+        let liveContent = pluginWorkflowStartContent(action, relativePath);
+        while (true) {
+          const snapshot = await waitGeneratedPluginShareTask(taskStart.taskId, since, 25_000);
+          since = snapshot.nextSince;
+          if (snapshot.progress.length > 0) {
+            const newTextEvents = snapshot.progress
+              .map((line) => line.trim())
+              .filter(Boolean)
+              .map((line) => ({ kind: 'text' as const, text: `${line}\n` }));
+            liveEvents = [
+              ...liveEvents.filter((event, index) => !(index === liveEvents.length - 1 && event.kind === 'status' && event.label === 'working')),
+              ...newTextEvents,
+              { kind: 'status', label: 'working', detail: pluginWorkflowTitle(action) },
+            ];
+            liveContent = `${liveContent}\n\n${snapshot.progress.map((line) => line.trim()).filter(Boolean).join('\n')}`.trim();
+            replaceConversationMessage(
+              conversationId,
+              {
+                ...progressMessage,
+                content: liveContent,
+                events: liveEvents,
+                runStatus: 'running',
+              },
+              undefined,
+              false,
+            );
+          }
+          if (snapshot.status === 'running' || snapshot.status === 'queued') continue;
+          const endedAt = snapshot.endedAt ?? Date.now();
+          setActivePluginActionPaths((prev) => {
+            const next = new Set(prev);
+            next.delete(relativePath);
+            return next;
+          });
+          setHiddenAssistantPluginActionPaths((prev) => {
+            const next = new Set(prev);
+            next.delete(relativePath);
+            return next;
+          });
+          if (snapshot.status === 'done' && snapshot.result) {
+            setForceStreamingPluginMessageIds((prev) => {
+              const next = new Set(prev);
+              next.delete(messageId);
+              return next;
+            });
+            replaceConversationMessage(
+              conversationId,
+              {
+                ...progressMessage,
+                content: pluginWorkflowSuccessContent(
+                  action,
+                  relativePath,
+                  snapshot.result.message,
+                  snapshot.result.url,
+                  snapshot.result.log,
+                ),
+                events: pluginWorkflowResultEvents(
+                  action,
+                  relativePath,
+                  snapshot.result.message,
+                  snapshot.result.url,
+                  snapshot.result.log,
+                  true,
+                  liveEvents,
+                ),
+                endedAt,
+                runStatus: 'succeeded',
+              },
+              { telemetryFinalized: true },
+            );
+            updateConversationLatestRun('succeeded', endedAt);
+            return;
+          }
+          const errorMessage = snapshot.error?.message || `${pluginWorkflowTitle(action)} failed.`;
+          setForceStreamingPluginMessageIds((prev) => {
+            const next = new Set(prev);
+            next.delete(messageId);
+            return next;
+          });
+          replaceConversationMessage(
+            conversationId,
+            {
+              ...progressMessage,
+              content: pluginWorkflowFailureContent(
+                action,
+                relativePath,
+                errorMessage,
+                snapshot.error?.log,
+              ),
+              events: pluginWorkflowResultEvents(
+                action,
+                relativePath,
+                errorMessage,
+                undefined,
+                snapshot.error?.log,
+                false,
+                liveEvents,
+              ),
+              endedAt,
+              runStatus: 'failed',
+            },
+            { telemetryFinalized: true },
+          );
+          updateConversationLatestRun('failed', endedAt);
+          return;
+        }
+      })().catch((err) => {
+        const endedAt = Date.now();
+        setForceStreamingPluginMessageIds((prev) => {
+          const next = new Set(prev);
+          next.delete(messageId);
+          return next;
+        });
+        setActivePluginActionPaths((prev) => {
+          const next = new Set(prev);
+          next.delete(relativePath);
+          return next;
+        });
+        setHiddenAssistantPluginActionPaths((prev) => {
+          const next = new Set(prev);
+          next.delete(relativePath);
+          return next;
+        });
+        replaceConversationMessage(
+          conversationId,
+          {
+            ...progressMessage,
+            content: pluginWorkflowFailureContent(
+              action,
+              relativePath,
+              err instanceof Error ? err.message : String(err),
+            ),
+            events: pluginWorkflowResultEvents(
+              action,
+              relativePath,
+              err instanceof Error ? err.message : String(err),
+              undefined,
+              [],
+              false,
+            ),
+            endedAt,
+            runStatus: 'failed',
+          },
+          { telemetryFinalized: true },
+        );
+        updateConversationLatestRun('failed', endedAt);
+      });
+      return;
     },
-    [currentConversationActionDisabled, handleSend],
+    [
+      activeConversationId,
+      appendConversationMessage,
+      currentConversationActionDisabled,
+      pluginWorkflowAgentName,
+      project.id,
+      replaceConversationMessage,
+    ],
   );
 
   const sentDesignSystemReviewTaskKeysRef = useRef<Set<string>>(new Set());
@@ -3612,6 +3925,9 @@ export function ProjectView({
               onStop={handleStop}
               onRequestOpenFile={requestOpenFile}
               onRequestPluginFolderAgentAction={handlePluginFolderAgentAction}
+              activePluginActionPaths={activePluginActionPaths}
+              hiddenPluginActionPaths={hiddenAssistantPluginActionPaths}
+              forceStreamingMessageIds={forceStreamingPluginMessageIds}
               initialDraft={chatInitialDraft}
               onSubmitForm={(text) => {
                 if (currentConversationActionDisabled) return;
@@ -3691,6 +4007,7 @@ export function ProjectView({
           onRemovePreviewComment={removePreviewComment}
           onSendBoardCommentAttachments={handleSendBoardCommentAttachments}
           onPluginFolderAgentAction={handlePluginFolderAgentAction}
+          activePluginActionPaths={activePluginActionPaths}
           focusMode={workspaceFocused}
           onFocusModeChange={setWorkspaceFocused}
           designSystemProject={designSystemProject}
@@ -3790,6 +4107,119 @@ function latestDesignSystemActivityEvents(messages: ChatMessage[]): AgentEvent[]
     if (isActiveRunStatus(message.runStatus)) return [];
   }
   return [];
+}
+
+function pluginWorkflowTitle(action: PluginFolderAgentAction): string {
+  return action === 'publish' ? 'Publish repo' : 'Open Design PR';
+}
+
+function pluginWorkflowCliCommand(action: PluginFolderAgentAction, relativePath: string): string {
+  return action === 'publish'
+    ? `od plugin publish-repo ${relativePath}`
+    : `od plugin open-design-pr ${relativePath}`;
+}
+
+function pluginWorkflowPlannedSteps(action: PluginFolderAgentAction): string[] {
+  if (action === 'publish') {
+    return [
+      'Resolve GitHub owner and validate plugin metadata',
+      'Create or update the GitHub repository',
+      'Push plugin files and tags',
+      'Return the repository URL',
+    ];
+  }
+  return [
+    'Ensure the Open Design fork exists',
+    'Clone the fork and prepare a branch',
+    'Copy the plugin into plugins/community',
+    'Push the branch and open the PR form',
+  ];
+}
+
+function pluginWorkflowPlannedEvents(action: PluginFolderAgentAction, relativePath: string): AgentEvent[] {
+  return [
+    { kind: 'text', text: `${pluginWorkflowStartContent(action, relativePath)}\n\n` },
+    { kind: 'status', label: 'working', detail: pluginWorkflowTitle(action) },
+  ];
+}
+
+function pluginWorkflowResultEvents(
+  action: PluginFolderAgentAction,
+  relativePath: string,
+  message: string,
+  url: string | undefined,
+  log: string[] | undefined,
+  ok: boolean,
+  existingEvents?: AgentEvent[],
+): AgentEvent[] {
+  const summary = ok
+    ? pluginWorkflowSuccessContent(action, relativePath, message, url, log)
+    : pluginWorkflowFailureContent(action, relativePath, message, log);
+  const baseEvents = (existingEvents ?? []).filter(
+    (event) => !(event.kind === 'status' && event.label === 'working'),
+  );
+  return [
+    ...baseEvents,
+    { kind: 'text', text: `${summary}\n\n` },
+    {
+      kind: 'status',
+      label: ok ? 'done' : 'failed',
+      detail: ok ? 'CLI command finished' : 'CLI command failed',
+    },
+  ];
+}
+
+function pluginWorkflowStartContent(action: PluginFolderAgentAction, relativePath: string): string {
+  const title = pluginWorkflowTitle(action);
+  const command = pluginWorkflowCliCommand(action, relativePath);
+  const steps = pluginWorkflowPlannedSteps(action).map((step) => `- ${step}`).join('\n');
+  return `${title} started.\n\n\`\`\`bash\n${command}\n\`\`\`\n\nPlanned steps:\n${steps}`;
+}
+
+function pluginWorkflowSuccessContent(
+  action: PluginFolderAgentAction,
+  relativePath: string,
+  message: string,
+  url?: string,
+  log?: string[],
+): string {
+  const summary = stripTrailingUrl(message, url) || `${pluginWorkflowTitle(action)} completed for \`${relativePath}\`.`;
+  const lines = (log ?? []).map((line) => line.trim()).filter(Boolean).slice(0, 5);
+  const command = pluginWorkflowCliCommand(action, relativePath);
+  const details = lines.length > 0
+    ? `\n\nCLI output:\n${lines.map((line) => `- \`${truncatePluginWorkflowLine(line)}\``).join('\n')}`
+    : '';
+  const link = url ? `\n\nLink: [${url}](${url})` : '';
+  return `${summary}\n\n\`\`\`bash\n${command}\n\`\`\`${link}${details}`;
+}
+
+function pluginWorkflowFailureContent(
+  action: PluginFolderAgentAction,
+  relativePath: string,
+  message: string,
+  log?: string[],
+): string {
+  const lines = (log ?? []).map((line) => line.trim()).filter(Boolean).slice(0, 5);
+  const command = pluginWorkflowCliCommand(action, relativePath);
+  const details = lines.length > 0
+    ? `\n\nCLI output:\n${lines.map((line) => `- \`${truncatePluginWorkflowLine(line)}\``).join('\n')}`
+    : '';
+  return `${pluginWorkflowTitle(action)} failed.\n\n\`\`\`bash\n${command}\n\`\`\`\n\n${message}${details}`;
+}
+
+function truncatePluginWorkflowLine(line: string): string {
+  return line.length > 160 ? `${line.slice(0, 157)}...` : line;
+}
+
+function stripTrailingUrl(message: string, url?: string): string {
+  const text = message.trim();
+  const link = url?.trim();
+  if (!link) return text;
+  return text.replace(new RegExp(`\\s*${escapeRegExp(link)}\\s*$`), '').trim();
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 // A daemon assistant message that is "queued/running" but has no runId yet

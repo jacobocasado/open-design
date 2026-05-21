@@ -33,6 +33,8 @@ import type {
 import type { SkillSummary } from '../types';
 import { Icon, type IconName } from './Icon';
 import { PluginInputsForm } from './PluginInputsForm';
+import { useAnalytics } from '../analytics/provider';
+import { trackHomeChatComposerClick } from '../analytics/events';
 import {
   chipsForGroup,
   type ChipGroup,
@@ -182,6 +184,7 @@ export const HomeHero = forwardRef<HTMLTextAreaElement, Props>(function HomeHero
   ref,
 ) {
   const { locale, t } = useI18n();
+  const analytics = useAnalytics();
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [mentionTab, setMentionTab] = useState<HomeMentionTab>('all');
   const [hoveredPlugin, setHoveredPlugin] = useState<InstalledPluginRecord | null>(null);
@@ -597,7 +600,7 @@ export const HomeHero = forwardRef<HTMLTextAreaElement, Props>(function HomeHero
       </div>
       <h1 className="home-hero__title">{t('homeHero.title')}</h1>
       <p className="home-hero__subtitle">
-        {t('homeHero.subtitlePrefix')} <kbd>Enter</kbd>.
+        {t('homeHero.subtitlePrefix')}
       </p>
 
       <div
@@ -998,7 +1001,14 @@ export const HomeHero = forwardRef<HTMLTextAreaElement, Props>(function HomeHero
               type="button"
               className="home-hero__attach"
               data-testid="home-hero-attach"
-              onClick={() => fileInputRef.current?.click()}
+              onClick={() => {
+                trackHomeChatComposerClick(analytics.track, {
+                  page_name: 'home',
+                  area: 'chat_composer',
+                  element: 'attachment',
+                });
+                fileInputRef.current?.click();
+              }}
               title={t('chat.attachAria')}
               aria-label={t('chat.attachAria')}
             >
@@ -1705,15 +1715,18 @@ function FooterInputOption({
   }
   if (field.name === 'designSystem' && designSystemOptions.length > 0) {
     const selectedValue = value === undefined || value === null ? '' : String(value);
-    const hasSelectedValue = selectedValue.length > 0 && designSystemOptions.some((option) => option.title === selectedValue);
-    const currentValue = hasSelectedValue ? selectedValue : designSystemOptions[0]?.title ?? '';
+    const selectedOption = selectedValue.length > 0
+      ? designSystemOptions.find((option) => option.title === selectedValue || option.id === selectedValue)
+      : undefined;
+    const currentValue = selectedOption?.id ?? designSystemOptions[0]?.id ?? '';
     return (
       <FooterSelectOption
         fieldName={field.name}
         label={label}
         value={currentValue}
         options={designSystemOptions.map((option) => ({
-          value: option.title,
+          value: option.id,
+          submitValue: option.title,
           label: option.isDefault ? `${option.title} (${t('ds.badgeDefault')})` : option.title,
           group: option.group,
           icon: option.auto ? 'sparkles' : undefined,
@@ -1894,7 +1907,7 @@ function FooterSelectOption({
                     aria-selected={option.value === value}
                     className={`home-hero__footer-select-item${option.value === value ? ' is-selected' : ''}`}
                     onClick={() => {
-                      onChange(option.value);
+                      onChange(option.submitValue ?? option.value);
                       setOpen(false);
                     }}
                   >
@@ -1923,6 +1936,7 @@ function FooterSelectOption({
 
 interface FooterSelectItemOption {
   value: string;
+  submitValue?: string;
   label: string;
   group?: string;
   icon?: IconName;

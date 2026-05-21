@@ -246,7 +246,10 @@ interface Props {
   onRequestPluginFolderAgentAction?: (
     relativePath: string,
     action: PluginFolderAgentAction,
-  ) => Promise<void> | void;
+  ) => Promise<{ message?: string; url?: string } | void> | { message?: string; url?: string } | void;
+  activePluginActionPaths?: Set<string>;
+  hiddenPluginActionPaths?: Set<string>;
+  forceStreamingMessageIds?: Set<string>;
   initialDraft?: string;
   // Question-form submissions become a normal user message; the parent
   // routes that text through onSend (no attachments).
@@ -320,6 +323,9 @@ export function ChatPane({
   onStop,
   onRequestOpenFile,
   onRequestPluginFolderAgentAction,
+  activePluginActionPaths,
+  hiddenPluginActionPaths,
+  forceStreamingMessageIds,
   initialDraft,
   onSubmitForm,
   onContinueRemainingTasks,
@@ -830,6 +836,7 @@ export function ChatPane({
                   m,
                   streaming,
                   lastAssistantId,
+                  forceStreamingMessageIds,
                 );
                 return (
                   <Fragment key={m.id}>
@@ -863,6 +870,8 @@ export function ChatPane({
                         projectFileNames={projectFileNames}
                         onRequestOpenFile={onRequestOpenFile}
                         onRequestPluginFolderAgentAction={onRequestPluginFolderAgentAction}
+                        activePluginActionPaths={activePluginActionPaths}
+                        hiddenPluginActionPaths={hiddenPluginActionPaths}
                         isLast={m.id === lastAssistantId}
                         nextUserContent={nextUserContentByAssistantId.get(m.id)}
                         suppressDirectionForms={hasActiveDesignSystem}
@@ -1125,8 +1134,10 @@ export function isAssistantMessageStreaming(
   message: ChatMessage,
   paneStreaming: boolean,
   lastAssistantId: string | null | undefined,
+  forceStreamingMessageIds?: Set<string>,
 ): boolean {
   if (message.role !== 'assistant') return false;
+  if (forceStreamingMessageIds?.has(message.id)) return true;
   if (isActiveRunStatus(message.runStatus)) return true;
   if (message.id !== lastAssistantId) return false;
   if (!paneStreaming) return false;

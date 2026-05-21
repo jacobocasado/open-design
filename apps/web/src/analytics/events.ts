@@ -53,7 +53,11 @@ import type {
   PresentPopoverClickProps,
   ShareOptionPopoverClickProps,
   AssistantFeedbackButtonClickProps,
+  AssistantFeedbackClickProps,
+  AssistantFeedbackReasonClickProps,
   AssistantFeedbackReasonSubmitClickProps,
+  AssistantFeedbackReasonSubmitProps,
+  AssistantFeedbackReasonViewProps,
   SettingsSidebarClickProps,
   SettingsExecutionModeTabClickProps,
   SettingsLocalCliClickProps,
@@ -615,4 +619,48 @@ export function trackSettingsConnectorAuthResult(
   props: SettingsConnectorAuthResultProps,
 ): void {
   send(track, 'settings_connector_auth_result', props);
+}
+
+export function trackAssistantFeedbackClick(
+  track: Track,
+  props: AssistantFeedbackClickProps,
+) {
+  track(
+    'assistant_feedback_click',
+    props as unknown as Record<string, unknown>,
+  );
+}
+
+export function trackAssistantFeedbackReasonView(
+  track: Track,
+  props: AssistantFeedbackReasonViewProps,
+) {
+  track(
+    'assistant_feedback_reason_view',
+    props as unknown as Record<string, unknown>,
+  );
+}
+
+export function trackAssistantFeedbackReasonClick(
+  track: Track,
+  props: AssistantFeedbackReasonClickProps,
+  options?: { requestId: string },
+) {
+  track(
+    'assistant_feedback_reason_click',
+    props as unknown as Record<string, unknown>,
+    options,
+  );
+}
+
+export function trackAssistantFeedbackReasonSubmit(
+  track: Track,
+  props: AssistantFeedbackReasonSubmitProps,
+  options?: { requestId: string },
+) {
+  track(
+    'assistant_feedback_reason_submit',
+    props as unknown as Record<string, unknown>,
+    options,
+  );
 }

@@ -46,6 +46,7 @@ describe('ChatPane streaming state', () => {
 
     render(
       <ChatPane
+        projectKindForTracking="prototype"
         messages={messages}
         streaming={false}
         error={null}
@@ -117,6 +118,7 @@ Expected output:
 
     render(
       <ChatPane
+        projectKindForTracking="prototype"
         messages={messages}
         streaming={false}
         error={null}

@@ -33,6 +33,10 @@ export type AnalyticsEventName =
   | 'artifact_export_result'
   // Feedback
   | 'feedback_submit_result'
+  | 'assistant_feedback_click'
+  | 'assistant_feedback_reason_view'
+  | 'assistant_feedback_reason_click'
+  | 'assistant_feedback_reason_submit'
   // Settings
   | 'settings_view'
   | 'settings_cli_test_result'
@@ -157,6 +161,35 @@ export type TrackingResult = 'success' | 'failed';
 export type TrackingRunResult = 'success' | 'failed' | 'cancelled';
 export type TrackingExportResult = 'success' | 'failed' | 'cancelled';
 export type TrackingTestResult = 'success' | 'failed' | 'timeout';
+
+export type TrackingFeedbackRating = 'positive' | 'negative';
+// Click events emit `none` when the user clears a previously-set rating, so
+// `rating` (post-state) and `rating_before` (pre-state) on click both use
+// this widened union. Reason events still require a concrete rating.
+export type TrackingFeedbackRatingWithNone = 'positive' | 'negative' | 'none';
+export type TrackingFeedbackAction =
+  | 'submit_feedback_rating'
+  | 'clear_feedback_rating';
+
+// Mirrors ChatMessageFeedbackReasonCode in packages/contracts/src/api/chat.ts.
+// Kept independent so the analytics wire format can evolve without forcing
+// a contract bump on the chat persistence shape.
+export type TrackingFeedbackReasonCode =
+  | 'matched_request'
+  | 'strong_visual'
+  | 'useful_structure'
+  | 'easy_to_continue'
+  | 'followed_design_system'
+  | 'missed_request'
+  | 'weak_visual'
+  | 'incomplete_output'
+  | 'hard_to_use'
+  | 'missed_design_system'
+  | 'other';
+
+// Product confirmed on 2026-05-13: custom_reason ships the raw text so
+// analysts can read the actual feedback. The earlier length-bucket approach
+// from the tracking doc draft is no longer in effect.
 
 export type TrackingTokenCountSource =
   | 'provider_usage'
@@ -394,7 +427,11 @@ export interface HomeChatComposerClickProps {
     | 'chat_input'
     | 'send_button'
     | 'plugin_chip'
-    | 'action_chip';
+    | 'action_chip'
+    // Paperclip icon opening the file picker. Mirrors the chat_panel
+    // composer's `element: 'attachment'` so the same dashboard counts
+    // "user opened the file picker" across both surfaces.
+    | 'attachment';
   // For plugin / action chips, the specific id (e.g. `prototype`, `from_figma`).
   chip_id?: string;
 }
@@ -1166,16 +1203,19 @@ export interface UpdateApplyObservedProps {
   elapsed_bucket: TrackingUpdateApplyElapsedBucket;
 }
 
-export interface FileUploadResultProps {
-  page_name: 'file_manager';
-  area: 'file_manager';
+export type TrackingFileUploadSurface =
+  | { page_name: 'file_manager'; area: 'file_manager' }
+  | { page_name: 'chat_panel'; area: 'chat_composer' }
+  | { page_name: 'home'; area: 'chat_composer' };
+
+export type FileUploadResultProps = TrackingFileUploadSurface & {
   project_id: string;
   file_count: number;
   file_type: TrackingFileType;
   file_size_bucket: TrackingFileSizeBucket;
   result: TrackingRunResult;
   error_code?: string;
-}
+};
 
 export interface ArtifactExportResultProps {
   page_name: 'artifact';
@@ -1206,6 +1246,65 @@ export interface FeedbackSubmitResultProps {
   has_custom_reason: boolean;
   custom_reason?: string;
   result: TrackingResult;
+}
+
+interface AssistantFeedbackBase {
+  page: 'studio';
+  area: 'chat_panel';
+  project_id: string;
+  project_kind: TrackingProjectKind;
+  conversation_id: string;
+  assistant_message_id: string;
+  // run_id may be absent for messages whose run record is missing or pruned,
+  // but the product funnel keys off this; we emit `null` rather than dropping
+  // the field so PostHog can distinguish "no run id" from "field forgotten".
+  run_id: string | null;
+  rating: TrackingFeedbackRating;
+}
+
+// Click events override `rating` to allow `'none'` because the user can
+// clear a previously-set rating; reason_* events still inherit the
+// stricter `positive | negative` base since they only fire after the user
+// commits to a thumb.
+export interface AssistantFeedbackClickProps
+  extends Omit<AssistantFeedbackBase, 'rating'> {
+  element: 'assistant_feedback_button';
+  action: TrackingFeedbackAction;
+  /** Post-action state. `'none'` when the user just cleared their rating. */
+  rating: TrackingFeedbackRatingWithNone;
+  /** Pre-action state. Renamed from `previous_rating` for symmetry with `rating`. */
+  rating_before: TrackingFeedbackRatingWithNone;
+  has_produced_files: boolean;
+}
+
+export interface AssistantFeedbackReasonViewProps extends AssistantFeedbackBase {
+  element: 'assistant_feedback_reason_panel';
+  view_type: 'panel';
+}
+
+// Shape shared by reason_click (button click) and reason_submit (result).
+// Both fire from the same submit handler with the same payload, threaded by
+// request_id so PostHog can stitch click→result.
+interface AssistantFeedbackReasonResultBase extends AssistantFeedbackBase {
+  reason: TrackingFeedbackReasonCode[];
+  reason_count: number;
+  has_custom_reason: boolean;
+  /** Raw free-text the user typed in the "other" input. Empty string when
+   * the user didn't select "other" or left the field blank. Product
+   * confirmed on 2026-05-13 that the raw text ships (no length bucketing). */
+  custom_reason: string;
+}
+
+export interface AssistantFeedbackReasonClickProps
+  extends AssistantFeedbackReasonResultBase {
+  element: 'assistant_feedback_reason_submit_button';
+  action: 'click_submit_feedback_reason';
+}
+
+export interface AssistantFeedbackReasonSubmitProps
+  extends AssistantFeedbackReasonResultBase {
+  element: 'assistant_feedback_reason_submit';
+  action: 'submit_feedback_reason';
 }
 
 // SETTINGS view + result events (page=settings)
@@ -1257,6 +1356,19 @@ export type AnalyticsEventPayload =
   | { event: 'file_upload_result'; props: FileUploadResultProps }
   | { event: 'artifact_export_result'; props: ArtifactExportResultProps }
   | { event: 'feedback_submit_result'; props: FeedbackSubmitResultProps }
+  | { event: 'assistant_feedback_click'; props: AssistantFeedbackClickProps }
+  | {
+      event: 'assistant_feedback_reason_view';
+      props: AssistantFeedbackReasonViewProps;
+    }
+  | {
+      event: 'assistant_feedback_reason_click';
+      props: AssistantFeedbackReasonClickProps;
+    }
+  | {
+      event: 'assistant_feedback_reason_submit';
+      props: AssistantFeedbackReasonSubmitProps;
+    }
   | { event: 'settings_view'; props: SettingsViewProps }
   | { event: 'settings_cli_test_result'; props: SettingsCliTestResultProps }
   | { event: 'settings_byok_test_result'; props: SettingsByokTestResultProps }
@@ -1559,4 +1671,14 @@ export function deriveConfigureGlobals(
     configure_type: configureType,
     configure_availability: configureAvailability,
   };
+}
+
+// Normalize the "other" custom-reason free text for transport. Trims
+// whitespace and returns empty string when the field is blank or the user
+// didn't select the "other" option. Callers should pass the raw text only
+// when `has_custom_reason` is true; the helper itself is permissive.
+export function normalizeCustomReason(
+  text: string | null | undefined,
+): string {
+  return (text ?? '').trim();
 }
