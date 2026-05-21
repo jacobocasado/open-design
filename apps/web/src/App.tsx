@@ -319,8 +319,22 @@ export function App() {
   // {active:false} if this hasn't run.
   const activeProjectId = route.kind === 'project' ? route.projectId : null;
   const activeFileName = route.kind === 'project' ? route.fileName : null;
+  // Gate the privacy banner on three things:
+  //   1. Daemon config has hydrated (privacyDecisionAt is daemon-owned).
+  //   2. The user has not yet made a privacy decision.
+  //   3. Onboarding is complete AND the user is on a home view.
+  // (3) covers both onboarding paths: Skip lands on home directly, finish
+  // routes through a project view first and the banner waits for the user
+  // to return to home. Existing users (onboardingCompleted=true from any
+  // prior session) get the banner the moment they land on home. Settings
+  // has no influence on visibility; the banner sits above the modal-backdrop
+  // layer in index.css so opening Settings does not hide it.
+  const onHomeRoute = route.kind === 'home';
   const showPrivacyConsent =
-    daemonConfigLoaded && config.privacyDecisionAt == null;
+    daemonConfigLoaded &&
+    config.privacyDecisionAt == null &&
+    config.onboardingCompleted === true &&
+    onHomeRoute;
   useEffect(() => {
     const body = activeProjectId
       ? { projectId: activeProjectId, fileName: activeFileName }
@@ -1379,6 +1393,13 @@ export function App() {
                   ...curr.filter((p) => p.id !== project.id),
                 ]);
               }
+              // Creating a design system from the onboarding step 2 panel
+              // counts as completing onboarding, even though the user is
+              // about to leave the entry shell for the project view. The
+              // Skip path already marks completion via finishOnboarding;
+              // mirror that here so the first-run privacy banner can
+              // surface when the user later returns to home.
+              handleCompleteOnboarding();
               navigate({ kind: 'project', projectId, conversationId: null, fileName: null });
             }}
             onProjectPrepared={(project) => {
@@ -1455,10 +1476,11 @@ export function App() {
       <MemoryToast onOpenMemory={() => openSettings('memory')} />
       {/* First-run privacy consent banner. It waits for daemon config
           hydration because privacyDecisionAt is daemon-owned and stripped
-          from localStorage. Lifecycle is independent of Settings and
-          onboarding — the banner stays mounted until the user clicks
-          "I get it", regardless of which view is active. Its z-index in
-          index.css sits above modal backdrops so it stays actionable. */}
+          from localStorage. It waits for `onboardingCompleted` so first-run
+          users see the welcome panel before the disclosure (Skip and
+          finish both flip the flag). Independent of Settings: z-index in
+          index.css sits above modal backdrops so opening Settings does
+          not hide the banner. */}
       {showPrivacyConsent ? (
         <PrivacyConsentModal
           onAccept={() => {

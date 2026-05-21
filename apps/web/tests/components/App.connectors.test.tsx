@@ -297,6 +297,54 @@ describe('App connectors settings flows', () => {
     expect(container.querySelector('.privacy-consent-banner')).toBeTruthy();
   });
 
+  it('withholds the privacy banner until onboarding completes', async () => {
+    // First-run users should land on the welcome panel without the
+    // privacy disclosure layered on top. The banner appears only after
+    // onboardingCompleted flips to true (Skip and finish both flip it).
+    mockedLoadConfig.mockReturnValue({ ...baseConfig, onboardingCompleted: false });
+    mockedFetchDaemonConfig.mockResolvedValue({ onboardingCompleted: false });
+
+    const { container } = render(<App />);
+
+    await waitFor(() => {
+      expect(mockedFetchDaemonConfig).toHaveBeenCalled();
+    });
+    // Give the bootstrap microtasks a turn to settle; banner must still
+    // be absent because onboardingCompleted is false.
+    await waitFor(() => {
+      expect(container.querySelector('.privacy-consent-banner')).toBeNull();
+    });
+  });
+
+  it('withholds the privacy banner outside the home route', async () => {
+    // After completing onboarding via the design-system step the user
+    // routes into a project view. The banner must wait until they return
+    // to a home view — otherwise the disclosure surfaces over an open
+    // project, which the product flow rejects.
+    useRouteMock.mockReturnValue({
+      kind: 'project',
+      projectId: 'proj-1',
+      conversationId: null,
+      fileName: null,
+    } as never);
+
+    try {
+      const { container } = render(<App />);
+
+      await waitFor(() => {
+        expect(mockedFetchDaemonConfig).toHaveBeenCalled();
+      });
+      await waitFor(() => {
+        expect(container.querySelector('.privacy-consent-banner')).toBeNull();
+      });
+    } finally {
+      useRouteMock.mockReturnValue({
+        kind: 'home' as const,
+        view: 'home' as const,
+      } as never);
+    }
+  });
+
   it('normalizes local persistence but sends the raw replacement key to the daemon on save', async () => {
     mockedLoadConfig.mockReturnValue({
       ...baseConfig,
