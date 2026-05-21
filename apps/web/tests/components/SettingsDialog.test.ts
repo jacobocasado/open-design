@@ -413,6 +413,31 @@ describe('SettingsDialog agent CLI env settings', () => {
     expect(codexPathRepairState(baseConfig, result)).toEqual({
       detectedPath: '/Users/test/.npm/_npx/codex-native',
       canUseDetected: true,
+      hasSavedCustomPath: false,
+    });
+  });
+
+  it('marks Codex repair state as having a saved custom path only when one exists', () => {
+    const config: AppConfig = {
+      ...baseConfig,
+      agentCliEnv: {
+        codex: { CODEX_BIN: '/Users/test/bin/stale-codex' },
+      },
+    };
+    const result: ConnectionTestResponse = {
+      ok: true,
+      kind: 'success',
+      latencyMs: 12,
+      agentName: 'Codex CLI',
+      usedExecutableSource: 'fallback_invalid',
+      detectedExecutablePath: '/opt/homebrew/bin/codex',
+      usedExecutablePath: '/Users/test/.npm/_npx/codex-native',
+    };
+
+    expect(codexPathRepairState(config, result)).toEqual({
+      detectedPath: '/Users/test/.npm/_npx/codex-native',
+      canUseDetected: true,
+      hasSavedCustomPath: true,
     });
   });
 

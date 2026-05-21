@@ -673,7 +673,11 @@ function apiModelOptionLabel(model: ProviderModelOption): string {
 export function codexPathRepairState(
   cfg: AppConfig,
   result: ConnectionTestResponse,
-): { detectedPath: string; canUseDetected: boolean } | null {
+): {
+  detectedPath: string;
+  canUseDetected: boolean;
+  hasSavedCustomPath: boolean;
+} | null {
   if (!result.ok) return null;
   if (
     result.usedExecutableSource !== 'path' &&
@@ -692,6 +696,7 @@ export function codexPathRepairState(
   return {
     detectedPath,
     canUseDetected: true,
+    hasSavedCustomPath: Boolean(savedPath),
   };
 }
 
@@ -2530,13 +2535,15 @@ export function SettingsDialog({
                                                 {codexStrings.useDetected}
                                               </button>
                                             ) : null}
-                                            <button
-                                              type="button"
-                                              className="ghost icon-btn settings-rescan-btn"
-                                              onClick={clearCodexCustomPath}
-                                            >
-                                              {codexStrings.clearCustom}
-                                            </button>
+                                            {repair.hasSavedCustomPath ? (
+                                              <button
+                                                type="button"
+                                                className="ghost icon-btn settings-rescan-btn"
+                                                onClick={clearCodexCustomPath}
+                                              >
+                                                {codexStrings.clearCustom}
+                                              </button>
+                                            ) : null}
                                           </div>
                                         </div>
                                       );
