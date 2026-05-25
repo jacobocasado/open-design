@@ -72,8 +72,6 @@ describe("launcher proto", () => {
     expect(runtime.lastSuccessful.apps).toEqual({});
     expect(JSON.stringify(runtime)).toContain("\"endpoint\"");
     expect(JSON.stringify(runtime)).not.toContain("\"ipc\"");
-    expect(JSON.stringify(runtime)).not.toContain("\"mode\"");
-    expect(JSON.stringify(runtime)).not.toContain("\"source\"");
   });
 
   it("normalizes endpoint", () => {

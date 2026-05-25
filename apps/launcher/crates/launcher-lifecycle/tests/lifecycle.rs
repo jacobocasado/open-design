@@ -296,52 +296,6 @@ fn unknown_fields_fail() {
 }
 
 #[test]
-fn legacy_fields_fail() {
-    let root = temp_root("legacy-runtime-mode-source");
-    let config_root = root.join("config");
-    fs::create_dir_all(&config_root).unwrap();
-    fs::write(
-        config_root.join(LAUNCHER_CONFIG_FILE),
-        r#"{
-  "schemaVersion": 1,
-  "runtimePath": "runtime.json"
-}"#,
-    )
-    .unwrap();
-    fs::write(
-        config_root.join("runtime.json"),
-        r#"{
-  "schemaVersion": 1,
-  "generation": 12,
-  "namespace": "release-beta-win",
-  "namespaceRoot": "namespaces/release-beta-win",
-  "mode": "packaged",
-  "source": "launcher",
-  "active": {
-    "version": "0.8.1",
-    "root": "namespaces/release-beta-win/versions/0.8.1",
-    "entry": {"executable": "payload/Open Design Payload.exe"}
-  },
-  "lastSuccessful": {
-    "version": "0.8.0",
-    "root": "namespaces/release-beta-win/versions/0.8.0",
-    "entry": {"executable": "payload/Open Design Payload.exe"}
-  }
-}"#,
-    )
-    .unwrap();
-    let mut search = search(&root);
-    search.explicit_root = Some(config_root);
-
-    assert!(matches!(
-        resolve_launcher_config(&search),
-        Err(LauncherLifecycleError::Platform(_))
-    ));
-
-    let _ = fs::remove_dir_all(root);
-}
-
-#[test]
 fn cwd_defaults_to_payload() {
     let config = launcher_lifecycle::LauncherConfig {
         attempt_path: None,

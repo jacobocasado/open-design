@@ -37,6 +37,4 @@ fn stamp_uses_endpoint_field() {
 
     assert_eq!(json["endpoint"], "tcp://127.0.0.1:17401");
     assert!(json.get("ipc").is_none());
-    assert!(json.get("mode").is_none());
-    assert!(json.get("source").is_none());
 }

@@ -319,7 +319,7 @@ fn load_from_path(
             let payload_root = config
                 .payload_root
                 .as_deref()
-                .expect("legacy payloadRoot must be validated before resolution");
+                .expect("payloadRoot must be validated before resolution");
             resolve_config_path(&config_root, payload_root)
         });
     Ok(ResolvedLauncherConfig {

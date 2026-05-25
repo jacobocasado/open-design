@@ -28,7 +28,7 @@ Follow the root `AGENTS.md` and `apps/AGENTS.md` first. This app owns the native
 - Keep protocol-shaped app/namespace/endpoint/stamp primitives in `crates/launcher-proto`; this crate is hand-written Rust and does not import TypeScript packages.
 - Keep launcher-local resource/update DTOs in `crates/launcher-core`.
 - `launcher.json` lookup order is `--root <dir>` > `OD_LAUNCHER_ROOT` > current working directory > launcher executable directory. Explicit root/env misses must fail instead of falling back.
-- Prefer `launcher.json` + external `runtime.json` for new activation flows. Legacy `payloadRoot` + `entry` is only a transitional cold-start path.
+- Prefer `launcher.json` + external `runtime.json` for new activation flows. The `payloadRoot` + `entry` path is only a transitional cold-start path.
 - `lastSuccessful` is advanced by desktop after health confirmation; launcher must not treat spawn success as product health.
 - Windows launcher builds must embed an `.ico` through the `OD_LAUNCHER_WIN_ICON` build input, defaulting to `tools/pack/resources/win/icon.ico`.
 
