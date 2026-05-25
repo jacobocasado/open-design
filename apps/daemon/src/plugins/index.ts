@@ -86,6 +86,7 @@ export * from './atoms/token-map.js';
 export * from './bundled.js';
 export * from './connector-gate.js';
 export * from './connector-probe.js';
+export * from './candidates.js';
 export * from './export.js';
 export * from './doctor.js';
 export * from './installer.js';

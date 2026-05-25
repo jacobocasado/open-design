@@ -90,6 +90,8 @@ import {
   applyDiffReviewDecisionToCwd,
   applyPlugin,
   buildConnectorProbe,
+  detectSkillPluginCandidates,
+  dismissSkillPluginCandidate,
   defaultBundledRoot,
   doctorPlugin,
   FIRST_PARTY_ATOMS,
@@ -98,10 +100,12 @@ import {
   installFromLocalFolder,
   installPlugin,
   isDiffReviewSurfaceId,
+  listSkillPluginCandidates,
   listInstalledPlugins,
   listIterationsForRun,
   MissingInputError,
   pluginPromptBlock,
+  persistSkillPluginCandidates,
   pruneExpiredSnapshots,
   readPluginLockfile,
   registerBuiltInAtomWorkers,
@@ -7087,6 +7091,26 @@ export async function startServer({
     }
   });
 
+  app.get('/api/projects/:id/plugin-candidates', (req, res) => {
+    const project = getProject(db, req.params.id);
+    if (!project) return sendApiError(res, 404, 'NOT_FOUND', 'project not found');
+    const includeDismissed = req.query.includeDismissed === 'true';
+    res.json({
+      candidates: listSkillPluginCandidates(db, req.params.id, { includeDismissed }),
+    });
+  });
+
+  app.post('/api/projects/:id/plugin-candidates/:candidateId/dismiss', (req, res) => {
+    const project = getProject(db, req.params.id);
+    if (!project) return sendApiError(res, 404, 'NOT_FOUND', 'project not found');
+    const candidate = dismissSkillPluginCandidate(db, {
+      projectId: req.params.id,
+      candidateId: req.params.candidateId,
+    });
+    if (!candidate) return sendApiError(res, 404, 'NOT_FOUND', 'plugin candidate not found');
+    res.json({ candidate });
+  });
+
   // Plan §3.CC1 — `od plugin canon <snapshotId>`. Returns the
   // canonical `## Active plugin` block the agent will see when
   // this snapshot is spliced into the system prompt. Powered by
@@ -11741,6 +11765,30 @@ export async function startServer({
     }
     reconcileAssistantMessageOnRunEnd(db, design.runs, run);
     design.runs.start(run, () => startChatRun(meta, run));
+    design.runs.wait(run).then(async (status) => {
+      if (status.status !== 'succeeded') return;
+      if (typeof meta.projectId !== 'string' || !meta.projectId) return;
+      const project = getProject(db, meta.projectId);
+      if (!project) return;
+      const projectRoot = project.metadata?.baseDir
+        ? path.normalize(project.metadata.baseDir)
+        : await ensureProject(PROJECTS_DIR, meta.projectId);
+      const candidates = await detectSkillPluginCandidates({
+        projectRoot,
+        attachments: meta.attachments,
+        message: meta.message,
+        currentPrompt: meta.currentPrompt,
+        systemPrompt: meta.systemPrompt,
+      });
+      if (candidates.length === 0) return;
+      persistSkillPluginCandidates(db, {
+        projectId: meta.projectId,
+        runId: run.id,
+        candidates,
+      });
+    }).catch((err) => {
+      console.warn('[plugins] skill plugin candidate detection failed', err);
+    });
 
     // Analytics v2: emit run_created (daemon-side authoritative) and
     // schedule run_finished on terminal state. The matching `chat-routes.ts`

@@ -368,6 +368,88 @@ process.stdin.on('end', () => {
     expect(stagedFileBody).toBe(expectedChecklist);
   });
 
+  it('persists uploaded SKILL.md plugin candidates after a successful run', async () => {
+    const projectId = `project-${randomUUID()}`;
+    const createProjectResponse = await fetch(`${baseUrl}/api/projects`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: projectId,
+        name: 'Skill candidate project',
+      }),
+    });
+
+    expect(createProjectResponse.ok).toBe(true);
+
+    const uploadResponse = await fetch(`${baseUrl}/api/projects/${projectId}/files`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'SKILL.md',
+        content: [
+          '---',
+          'name: storyboard-helper',
+          'description: Reusable storyboard planning workflow.',
+          '---',
+          '# Storyboard Helper',
+          '',
+          'Use this skill when planning storyboard sequences.',
+        ].join('\n'),
+      }),
+    });
+
+    expect(uploadResponse.ok).toBe(true);
+
+    await withFakeAgent(
+      'opencode',
+      `
+process.stdin.resume();
+process.stdin.on('end', () => {
+  console.log(JSON.stringify({ type: 'step_start' }));
+  console.log(JSON.stringify({ type: 'text', part: { text: 'skill-candidate-run-complete' } }));
+  console.log(JSON.stringify({ type: 'step_finish', part: { tokens: { input: 1, output: 1 } } }));
+  process.exit(0);
+});
+`,
+      async () => {
+        const createRunResponse = await fetch(`${baseUrl}/api/runs`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            agentId: 'opencode',
+            projectId,
+            conversationId: `conversation-${randomUUID()}`,
+            assistantMessageId: `assistant-${randomUUID()}`,
+            clientRequestId: `client-${randomUUID()}`,
+            message: 'Use the uploaded SKILL.md.',
+            attachments: ['SKILL.md'],
+          }),
+        });
+        const createRunBody = await createRunResponse.json() as { runId: string };
+
+        expect(createRunResponse.status).toBe(202);
+        await waitForRunStatus(baseUrl, createRunBody.runId, (status) => status === 'succeeded');
+
+        let candidates: Array<{ title?: string; provenance?: string; draftInput?: { contentExcerpt?: string } }> = [];
+        for (let attempt = 0; attempt < 20; attempt += 1) {
+          const candidatesResponse = await fetch(`${baseUrl}/api/projects/${projectId}/plugin-candidates`);
+          const candidatesBody = await candidatesResponse.json() as { candidates: typeof candidates };
+          candidates = candidatesBody.candidates;
+          if (candidates.length > 0) break;
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+
+        expect(candidates).toHaveLength(1);
+        const candidate = candidates[0]!;
+        expect(candidate).toMatchObject({
+          title: 'storyboard-helper',
+          provenance: 'uploaded-skill-md',
+        });
+        expect(candidate.draftInput?.contentExcerpt).toContain('Storyboard Helper');
+      },
+    );
+  });
+
   it('stages side files for every composed skill into the project cwd', async () => {
     const projectId = `project-${randomUUID()}`;
     const stagedPaths = [
