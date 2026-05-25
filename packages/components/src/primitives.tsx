@@ -1,14 +1,8 @@
 import { forwardRef } from 'react';
-import type {
-  ButtonHTMLAttributes,
-  InputHTMLAttributes,
-  ReactNode,
-  SelectHTMLAttributes,
-  TextareaHTMLAttributes,
-} from 'react';
+import type { ButtonHTMLAttributes, ReactNode } from 'react';
 
 export type ButtonVariant = 'default' | 'primary' | 'primary-ghost' | 'ghost' | 'subtle';
-export type ButtonSize = 'default' | 'compact' | 'icon';
+export type ButtonSize = 'default' | 'icon';
 
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: ButtonVariant;
@@ -29,31 +23,12 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
       type={type}
       className={joinClassNames(
         variant !== 'default' && variant,
-        size === 'compact' && 'compact',
         size === 'icon' && 'icon-btn',
         className,
       )}
       {...props}
     />
   );
-});
-
-export type InputProps = InputHTMLAttributes<HTMLInputElement>;
-
-export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(props, ref) {
-  return <input ref={ref} {...props} />;
-});
-
-export type TextareaProps = TextareaHTMLAttributes<HTMLTextAreaElement>;
-
-export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(function Textarea(props, ref) {
-  return <textarea ref={ref} {...props} />;
-});
-
-export type SelectProps = SelectHTMLAttributes<HTMLSelectElement>;
-
-export const Select = forwardRef<HTMLSelectElement, SelectProps>(function Select(props, ref) {
-  return <select ref={ref} {...props} />;
 });
 
 export interface VisuallyHiddenProps {
