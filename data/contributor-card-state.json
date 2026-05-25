@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-05-25T10:47:42.158Z",
+  "generatedAt": "2026-05-25T11:03:11.505Z",
   "contributors": {
     "1115052994": {
       "lastAnnouncedTier": "spark",
@@ -1120,8 +1120,8 @@
     },
     "jiannanya": {
       "lastAnnouncedTier": "signal",
-      "lastKnownScore": 34,
-      "lastCheckedAt": "2026-05-19T08:59:11.739Z",
+      "lastKnownScore": 46,
+      "lastCheckedAt": "2026-05-25T11:03:11.505Z",
       "scoreVersion": "weighted-v1",
       "lastAnnouncedAt": "2026-05-19T08:59:11.739Z"
     },
