@@ -49,6 +49,12 @@ const OUT_DIR = path.join(APP_ROOT, 'out');
 const SKILLS_SRC = path.join(REPO_ROOT, 'skills');
 const DESIGN_TEMPLATES_SRC = path.join(REPO_ROOT, 'design-templates');
 const LIVE_ARTIFACTS_SRC = path.join(REPO_ROOT, 'templates', 'live-artifacts');
+const BUNDLED_PLUGINS_SRC = path.join(REPO_ROOT, 'plugins', '_official');
+// Buckets that may carry a runnable `example.html` referenced by the
+// manifest's `od.preview.entry`. `design-systems`, `image-templates`,
+// `video-templates`, `scenarios` ship media (poster URL or generated
+// card) instead and don't need an iframe-able local entry.
+const BUNDLED_BUCKETS_WITH_EXAMPLE = ['examples'] as const;
 
 let copied = 0;
 let skipped = 0;
@@ -137,6 +143,52 @@ for (const slug of listDirs(LIVE_ARTIFACTS_SRC)) {
   if (ok) {
     copied++;
     if (copyReferencedAssetsDir(entrypointSrc, srcDir, destDir)) assetDirsCopied++;
+  }
+}
+
+// 4. Bundled plugins — `plugins/_official/<bucket>/<slug>/<entry>` →
+//    `out/plugins/<manifest-id>/<entry>`. Detail pages live at
+//    `/plugins/<manifest-id>/`, so the iframe and "Open in new tab"
+//    pill point at `/plugins/<manifest-id>/example.html`. The
+//    `<bucket>/<slug>` folder name doesn't show up in the URL — it's
+//    the manifest's `name` field that does, which we read from
+//    `open-design.json` here.
+//
+// We deliberately walk only `examples/` for now: that's the bucket
+// whose manifests carry a local `od.preview.entry`. The other
+// bundled-plugin buckets (image/video templates, scenarios,
+// design-systems) ship a remote poster URL or a generated fallback
+// card and never need a local iframe target.
+for (const bucket of BUNDLED_BUCKETS_WITH_EXAMPLE) {
+  const bucketDir = path.join(BUNDLED_PLUGINS_SRC, bucket);
+  if (!existsSync(bucketDir)) continue;
+  for (const slug of listDirs(bucketDir)) {
+    const slugDir = path.join(bucketDir, slug);
+    const manifestPath = path.join(slugDir, 'open-design.json');
+    if (!existsSync(manifestPath)) continue;
+
+    let manifest: { name?: unknown; od?: { preview?: { entry?: unknown } } };
+    try {
+      manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    } catch {
+      continue;
+    }
+    const manifestId = typeof manifest.name === 'string' ? manifest.name : null;
+    const entryRel =
+      typeof manifest.od?.preview?.entry === 'string'
+        ? manifest.od.preview.entry
+        : null;
+    if (!manifestId || !entryRel) continue;
+
+    const entrySrc = path.resolve(slugDir, entryRel);
+    if (!existsSync(entrySrc)) continue;
+    const entryRelClean = entryRel.replace(/^\.\//, '');
+    const destDir = path.join(OUT_DIR, 'plugins', manifestId);
+    const ok = copyIfExists(entrySrc, path.join(destDir, entryRelClean));
+    if (ok) {
+      copied++;
+      if (copyReferencedAssetsDir(entrySrc, slugDir, destDir)) assetDirsCopied++;
+    }
   }
 }
 
