@@ -17,6 +17,7 @@ import { kiroAgentDef } from './defs/kiro.js';
 import { kiloAgentDef } from './defs/kilo.js';
 import { vibeAgentDef } from './defs/vibe.js';
 import { deepseekAgentDef } from './defs/deepseek.js';
+import { aiderAgentDef } from './defs/aider.js';
 import { readLocalAgentProfileDefs as readLocalAgentProfileDefsFromFile } from './local-profiles.js';
 import type { RuntimeAgentDef } from './types.js';
 
@@ -40,6 +41,7 @@ const BASE_AGENT_DEFS: RuntimeAgentDef[] = [
   kiloAgentDef,
   vibeAgentDef,
   deepseekAgentDef,
+  aiderAgentDef,
 ];
 
 export function readLocalAgentProfileDefs(
