@@ -591,10 +591,6 @@ export function WorkspaceTabsBar({ route, projects }: Props) {
           );
         })}
       </div>
-      <div
-        className="app-chrome-file-actions workspace-tabs-file-actions"
-        data-app-chrome-file-actions="true"
-      />
       <div className="workspace-tabs-actions" ref={menuRef}>
         <button
           type="button"

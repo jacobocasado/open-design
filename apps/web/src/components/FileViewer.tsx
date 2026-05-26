@@ -118,7 +118,7 @@ import { MANUAL_EDIT_STYLE_PROPS, type ManualEditBridgeMessage, type ManualEditH
 import { isRenderableSketchJson, SketchPreview } from './SketchPreview';
 
 function resolveChromeActionsHost(): HTMLElement | null {
-  return document.querySelector<HTMLElement>(`.workspace-tabs-chrome ${APP_CHROME_FILE_ACTIONS_SELECTOR}`)
+  return document.querySelector<HTMLElement>(APP_CHROME_FILE_ACTIONS_SELECTOR)
     ?? document.getElementById(APP_CHROME_FILE_ACTIONS_ID);
 }
 
@@ -6435,6 +6435,7 @@ function HtmlViewer({
           {canShare ? (
             <div className="share-menu chrome-share-menu" ref={shareRef}>
               <button
+                type="button"
                 className={
                   'chrome-action chrome-action-primary chrome-action-export' +
                   (exportReadyNudge ? ' export-ready-nudge' : '')
@@ -6443,9 +6444,9 @@ function HtmlViewer({
                 aria-expanded={shareMenuOpen}
                 onClick={openExportMenu}
               >
-                <span className="export-action-spacer" aria-hidden />
+                <Icon name="download" size={13} />
                 <span>{t('fileViewer.shareLabel')}</span>
-                <RemixIcon name="arrow-down-s-line" size={14} />
+                <Icon name="chevron-down" size={11} />
               </button>
               {shareMenuOpen ? (
                 <div className="share-menu-popover" role="menu">

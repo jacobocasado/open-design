@@ -4157,6 +4157,10 @@ export function ProjectView({
               onRefreshAgents={onRefreshAgents}
               onBack={onBack}
             />
+            <div
+              className="app-chrome-file-actions-before workspace-tabs-file-actions"
+              data-app-chrome-file-actions="true"
+            />
           </>
         )}
         actions={(
