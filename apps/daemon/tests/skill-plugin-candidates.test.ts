@@ -4,8 +4,11 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   closeDatabase,
+  insertConversation,
   insertProject,
+  listMessages,
   openDatabase,
+  upsertMessage,
 } from '../src/db.js';
 import {
   detectSkillPluginCandidate,
@@ -14,6 +17,7 @@ import {
   insertSkillPluginCandidate,
   listSkillPluginCandidates,
 } from '../src/plugins/skill-candidates.js';
+import { upsertSkillPluginCandidateAssistantMessage } from '../src/server.js';
 
 let tmpDir: string;
 let projectRoot: string;
@@ -132,5 +136,75 @@ describe('skill plugin candidates', () => {
     expect(listSkillPluginCandidates(db, 'proj_1')).toHaveLength(0);
     expect(listSkillPluginCandidates(db, 'proj_2')).toHaveLength(1);
     expect(listSkillPluginCandidates(db, 'proj_1', true)[0]?.status).toBe('dismissed');
+  });
+
+  it('reuses and reanchors an existing candidate assistant message', () => {
+    const db = openDatabase(tmpDir, { dataDir: path.join(tmpDir, 'data') });
+    insertProject(db, {
+      id: 'proj_1',
+      name: 'Candidate project',
+      skillId: null,
+      designSystemId: null,
+      pendingPrompt: null,
+      metadata: { kind: 'prototype' },
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    insertConversation(db, {
+      id: 'conv_1',
+      projectId: 'proj_1',
+      title: 'Candidate conversation',
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    upsertMessage(db, 'conv_1', {
+      id: 'assistant_1',
+      role: 'assistant',
+      content: 'first run',
+      createdAt: 1,
+      endedAt: 1,
+    });
+
+    const candidate = insertSkillPluginCandidate(db, {
+      projectId: 'proj_1',
+      runId: 'run_1',
+      conversationId: 'conv_1',
+      assistantMessageId: null,
+      title: 'Reusable Skill',
+      description: 'A reusable skill.',
+      confidence: 0.9,
+      sourceRefs: [{ kind: 'file', value: 'SKILL.md' }],
+      provenance: { summary: 'test', detectedAt: 1 },
+      fingerprint: 'fingerprint_1',
+      draftPath: null,
+    })!;
+
+    const firstCardId = upsertSkillPluginCandidateAssistantMessage(db, {
+      id: 'run_1',
+      conversationId: 'conv_1',
+      assistantMessageId: 'assistant_1',
+      agentId: 'agent_1',
+    }, candidate);
+    upsertMessage(db, 'conv_1', {
+      id: 'assistant_2',
+      role: 'assistant',
+      content: 'second run',
+      createdAt: 2,
+      endedAt: 2,
+    });
+
+    const reloadedCandidate = listSkillPluginCandidates(db, 'proj_1')[0]!;
+    const secondCardId = upsertSkillPluginCandidateAssistantMessage(db, {
+      id: 'run_2',
+      conversationId: 'conv_1',
+      assistantMessageId: 'assistant_2',
+      agentId: 'agent_1',
+    }, reloadedCandidate);
+
+    expect(secondCardId).toBe(firstCardId);
+    expect(listMessages(db, 'conv_1').filter((message) =>
+      message.events?.some((event: { kind?: string }) => event.kind === 'plugin_candidate'),
+    )).toHaveLength(1);
+    expect(listSkillPluginCandidates(db, 'proj_1')[0]?.assistantMessageId).toBe(firstCardId);
   });
 });

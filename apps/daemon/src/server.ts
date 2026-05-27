@@ -2028,63 +2028,64 @@ function detectSkillPluginCandidateOnRunSuccess(db, runs, run, input, projectRoo
         attachments: input?.attachments,
         projectRoot,
       });
-      const candidate = detected
-        ? insertSkillPluginCandidate(db, detected)
-        : listSkillPluginCandidates(db, run.projectId)
-            .find((item) => item.status === 'active' && item.conversationId === run.conversationId);
+      const candidate = detected ? insertSkillPluginCandidate(db, detected) : null;
       if (!candidate || candidate.status === 'dismissed') return;
-      const currentMessagePosition = run.assistantMessageId
-        ? (db.prepare(`SELECT position FROM messages WHERE id = ?`).get(run.assistantMessageId)?.position ?? null)
-        : null;
-      const existingMessagePosition = candidate.assistantMessageId
-        ? (db.prepare(`SELECT position FROM messages WHERE id = ?`).get(candidate.assistantMessageId)?.position ?? null)
-        : null;
-      if (
-        typeof currentMessagePosition === 'number' &&
-        typeof existingMessagePosition === 'number' &&
-        existingMessagePosition > currentMessagePosition
-      ) {
-        return;
-      }
-      const existingMessageId =
-        candidate.assistantMessageId &&
-        candidate.assistantMessageId !== run.assistantMessageId &&
-        typeof existingMessagePosition === 'number' &&
-        typeof currentMessagePosition === 'number' &&
-        existingMessagePosition > currentMessagePosition
-          ? candidate.assistantMessageId
-          : null;
-      const messageId = existingMessageId ?? randomUUID();
-      if (!existingMessageId && candidate.assistantMessageId && candidate.assistantMessageId !== messageId) {
-        db.prepare(`DELETE FROM messages WHERE id = ?`).run(candidate.assistantMessageId);
-      }
-      upsertMessage(db, run.conversationId, {
-        id: messageId,
-        role: 'assistant',
-        content: `Open Design found reusable skill material that can become a plugin: ${candidate.title}`,
-        agentId: run.agentId ?? undefined,
-        events: [{
-          kind: 'plugin_candidate',
-          candidateId: candidate.id,
-          title: candidate.title,
-          description: candidate.description,
-          confidence: candidate.confidence,
-          draftPath: candidate.draftPath ?? null,
-        }],
-        createdAt: Date.now(),
-        endedAt: Date.now(),
-      });
-      if (!candidate.assistantMessageId) {
-        db.prepare(
-          `UPDATE skill_plugin_candidates
-              SET assistant_message_id = ?, updated_at = ?
-            WHERE id = ?`,
-        ).run(messageId, Date.now(), candidate.id);
-      }
+      upsertSkillPluginCandidateAssistantMessage(db, run, candidate);
     })
     .catch((err) => {
       console.warn('[plugins] skill candidate detection failed', err);
     });
+}
+
+export function upsertSkillPluginCandidateAssistantMessage(db, run, candidate) {
+  const currentMessagePosition = run.assistantMessageId
+    ? (db.prepare(`SELECT position FROM messages WHERE id = ?`).get(run.assistantMessageId)?.position ?? null)
+    : null;
+  const existingMessagePosition = candidate.assistantMessageId
+    ? (db.prepare(`SELECT position FROM messages WHERE id = ?`).get(candidate.assistantMessageId)?.position ?? null)
+    : null;
+  if (
+    typeof currentMessagePosition === 'number' &&
+    typeof existingMessagePosition === 'number' &&
+    existingMessagePosition > currentMessagePosition
+  ) {
+    return null;
+  }
+  const canReuseExistingMessage =
+    candidate.assistantMessageId &&
+    candidate.assistantMessageId !== run.assistantMessageId &&
+    typeof existingMessagePosition === 'number';
+  const messageId = canReuseExistingMessage ? candidate.assistantMessageId : randomUUID();
+  if (
+    candidate.assistantMessageId &&
+    candidate.assistantMessageId !== messageId &&
+    candidate.assistantMessageId !== run.assistantMessageId
+  ) {
+    db.prepare(`DELETE FROM messages WHERE id = ?`).run(candidate.assistantMessageId);
+  }
+  const now = Date.now();
+  upsertMessage(db, run.conversationId, {
+    id: messageId,
+    role: 'assistant',
+    content: `Open Design found reusable skill material that can become a plugin: ${candidate.title}`,
+    agentId: run.agentId ?? undefined,
+    events: [{
+      kind: 'plugin_candidate',
+      candidateId: candidate.id,
+      title: candidate.title,
+      description: candidate.description,
+      confidence: candidate.confidence,
+      draftPath: candidate.draftPath ?? null,
+    }],
+    createdAt: now,
+    endedAt: now,
+  });
+  db.prepare(
+    `UPDATE skill_plugin_candidates
+        SET assistant_message_id = ?, updated_at = ?
+      WHERE id = ?`,
+  ).run(messageId, now, candidate.id);
+  return messageId;
 }
 
 function persistRunEventToAssistantMessage(db, run, event, data) {
