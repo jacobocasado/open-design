@@ -183,8 +183,8 @@ interface Props {
   // affordance reads consistently across HTML / design-system / media
   // variants.
   headerExtras?: ReactNode;
-  // Social-share target for the active preview. When omitted, the modal uses
-  // the current browser URL so non-plugin callers still get copy/share actions.
+  // Social-share target for the active preview. Callers must pass an explicit
+  // recipient-openable URL before the modal exposes copy/social actions.
   shareTarget?: PreviewShareTarget;
   // Optional analytics callbacks. Fires when the user clicks the
   // chrome-level affordances (fullscreen, share trigger, sidebar
@@ -367,13 +367,8 @@ export function PreviewModal({
   );
   const exportTitle = exportTitleFor(activeView?.id ?? '');
   const canExportFiles = Boolean(activeHtml);
-  const fallbackShareUrl = canExportFiles && typeof window !== 'undefined'
-    ? window.location.href
-    : '';
-  const hasExplicitShareUrl = shareTarget && 'url' in shareTarget;
-  const explicitShareUrl = typeof shareTarget?.url === 'string' ? shareTarget.url : '';
   const previewShareTitle = shareTarget?.title || exportTitle || title;
-  const previewShareUrl = hasExplicitShareUrl ? explicitShareUrl : fallbackShareUrl;
+  const previewShareUrl = typeof shareTarget?.url === 'string' ? shareTarget.url : '';
   const previewShareText = t('preview.shareTextDefault', { title: previewShareTitle });
   const previewShareCopy = previewShareUrl
     ? `${previewShareText}\n${previewShareUrl}`
