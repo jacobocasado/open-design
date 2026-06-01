@@ -10202,13 +10202,18 @@ export async function startServer({
     async (req, res) => {
       try {
         const incoming = Array.isArray(req.files) ? req.files : [];
+        // Subfolder the upload targeted (sanitized, forward-slash, '' for root),
+        // stashed by the multer destination resolver. Prepend it so the client
+        // gets the file's true project-relative path, not just its basename.
+        const relDir = typeof (req as any)._uploadRelDir === 'string' ? (req as any)._uploadRelDir : '';
         const out = [];
         for (const f of incoming) {
           try {
             const stat = await fs.promises.stat(f.path);
+            const rel = relDir ? `${relDir}/${f.filename}` : f.filename;
             out.push({
-              name: f.filename,
-              path: f.filename,
+              name: rel,
+              path: rel,
               size: stat.size,
               mtime: stat.mtimeMs,
               originalName: f.originalname,

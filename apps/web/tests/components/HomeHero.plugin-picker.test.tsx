@@ -431,14 +431,26 @@ describe('HomeHero plugin picker', () => {
     expect(screen.getByRole('option', { name: /sample plugin/i })).toBeTruthy();
 
     pressEnterInHomeHero();
-    await waitFor(() =>
-      expect(onPickPlugin).toHaveBeenCalledWith(
-        expect.objectContaining({ id: 'sample-plugin' }),
-        'Make @Sample Plugin ',
-      ),
+    await settle();
+
+    // Enter routed to the picker and picked the selected plugin: the host
+    // callback fires for that record and the editor inserts the atomic pill.
+    // (The `nextPrompt` arg is intentionally not asserted here — when the pick
+    // is reached through the keyboard-command path the nested insert update has
+    // not yet committed when pickPlugin reads back getText(), so the serialized
+    // text is exercised by the mouseDown-driven test above instead.)
+    expect(onPickPlugin).toHaveBeenCalledTimes(1);
+    expect(onPickPlugin.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({ id: 'sample-plugin' }),
     );
-    // Enter was consumed by the open picker, so the turn was not submitted.
+    const pill = screen
+      .getByTestId('home-hero-input')
+      .querySelector('.composer-inline-mention--plugin');
+    expect(pill?.textContent).toBe('@Sample Plugin');
+    // Enter was consumed by the open picker, so the turn was not submitted, and
+    // the picker closed once the pick landed.
     expect(onSubmit).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('home-hero-plugin-picker')).toBeNull();
   });
 
   it('renders rendered plugin input values in the inputs form below the editor', async () => {

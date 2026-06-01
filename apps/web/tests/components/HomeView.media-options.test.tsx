@@ -203,8 +203,14 @@ describe('HomeView media composer options', () => {
 
     await clickHomeRailChip('audio');
     await waitFor(() => expect(screen.getByTestId('home-hero-footer-option-audioType')).toBeTruthy());
-    expect(screen.queryByRole('textbox', { name: 'Text' })).toBeNull();
+    // The old full editor grid is gone: "Audio type" is now a footer pill (a
+    // listbox-trigger button), not a native <select> combobox.
     expect(screen.queryByRole('combobox', { name: 'Audio type' })).toBeNull();
+    // The "Text" input moved out of the old grid into the PluginInputsForm
+    // (the new surface for non-footer plugin inputs), so it is scoped there
+    // rather than rendered as a free-standing grid control.
+    const textInput = screen.getByRole('textbox', { name: 'Text' });
+    expect(textInput.closest('[data-testid="plugin-inputs-form"]')).not.toBeNull();
     expect(promptIsEmpty()).toBe(true);
   });
 
@@ -293,6 +299,9 @@ describe('HomeView media composer options', () => {
 
     await clickHomeRailChip('audio');
     await waitFor(() => expect(screen.getByTestId('home-hero-footer-option-model')).toBeTruthy());
+    // The inline `{{slot}}` voice widget is gone; the real intent here is that
+    // selecting an ElevenLabs voice never back-fills the prompt editor body
+    // (asserted via promptIsEmpty below).
     expect(screen.queryByTestId('home-hero-prompt-slot-voice')).toBeNull();
 
     await chooseOption('model', 'elevenlabs-v3');
@@ -505,6 +514,13 @@ async function submitHome() {
 
 function optionTexts(select: HTMLElement): string[] {
   return within(select).getAllByRole('option').map((option) => option.textContent ?? '');
+}
+
+// An empty Lexical editor serializes its placeholder <br> as a lone '\n', so the
+// composer's clear-empty convention is `text.trim() === ''` (formerly the
+// textarea's `.value === ''`).
+function promptIsEmpty(): boolean {
+  return homeHeroPromptText().trim() === '';
 }
 
 async function chooseOption(name: string, value: string, label = value) {

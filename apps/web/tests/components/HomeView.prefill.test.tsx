@@ -522,7 +522,7 @@ describe('HomeView prompt handoff', () => {
       expect(screen.getByTestId('home-hero-context-plugin-example-web-prototype')).toBeTruthy();
     });
     await screen.findByTestId('home-hero-input');
-    expect(homeHeroPromptText()).toBe('');
+    expect(homeHeroPromptValue()).toBe('');
     expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/apply'))).toBe(false);
   });
 
@@ -671,7 +671,7 @@ describe('HomeView prompt handoff', () => {
     ).toContain('Refly Design System');
     expect(screen.getByTestId('home-hero-footer-option-fidelity')).toBeTruthy();
     expect(screen.getByTestId('home-hero-footer-option-designSystem')).toBeTruthy();
-    expect(homeHeroPromptText()).toBe('');
+    expect(homeHeroPromptValue()).toBe('');
     expect(screen.getByTestId('home-hero-plugin-presets')).toBeTruthy();
     // Inline `{{slot}}` prompt widgets were removed in the Lexical migration;
     // these null checks now confirm the migrated editor never renders them.
@@ -679,7 +679,17 @@ describe('HomeView prompt handoff', () => {
     expect(screen.queryByTestId('home-hero-prompt-slot-artifactKind')).toBeNull();
     expect(screen.queryByTestId('home-hero-prompt-slot-designSystem')).toBeNull();
     expect(screen.queryByTestId('home-hero-prompt-slot-template')).toBeNull();
-    expect(screen.queryByTestId('plugin-inputs-form')).toBeNull();
+    // New equivalent of the inline slots: the non-footer plugin inputs
+    // (artifactKind / audience / template) now surface in the structured
+    // PluginInputsForm below the editor, while fidelity / designSystem stay in
+    // the footer options. The old "form suppressed" assertion no longer holds
+    // because there are no inline slots to deduplicate against.
+    const inputsForm = screen.getByTestId('plugin-inputs-form');
+    expect(inputsForm.querySelector('[data-field-name="artifactKind"]')).toBeTruthy();
+    expect(inputsForm.querySelector('[data-field-name="audience"]')).toBeTruthy();
+    expect(inputsForm.querySelector('[data-field-name="template"]')).toBeTruthy();
+    expect(inputsForm.querySelector('[data-field-name="fidelity"]')).toBeNull();
+    expect(inputsForm.querySelector('[data-field-name="designSystem"]')).toBeNull();
 
     await setPromptAndSettle('Build a pricing-page prototype.');
     fireEvent.click(screen.getByTestId('home-hero-submit'));
@@ -762,12 +772,21 @@ describe('HomeView prompt handoff', () => {
       screen.getByTestId('home-hero-footer-option-designSystem').textContent,
     ).toContain('Refly Design System');
     expect(screen.getByTestId('home-hero-footer-option-fidelity').textContent).toContain('High fidelity');
-    expect(screen.queryByTestId('plugin-inputs-form')).toBeNull();
     // Inline `{{slot}}` prompt widgets were removed in the Lexical migration.
     expect(screen.queryByTestId('home-hero-prompt-slot-fidelity')).toBeNull();
     expect(screen.queryByTestId('home-hero-prompt-slot-artifactKind')).toBeNull();
     expect(screen.queryByTestId('home-hero-prompt-slot-designSystem')).toBeNull();
     expect(screen.queryByTestId('home-hero-prompt-slot-template')).toBeNull();
+    // The preset card seeds the prompt as plain text but keeps the chip's
+    // structured inputs: the non-footer fields now live in PluginInputsForm
+    // (the migrated equivalent of the removed inline slots), while
+    // fidelity / designSystem stay in the footer options above.
+    const inputsForm = screen.getByTestId('plugin-inputs-form');
+    expect(inputsForm.querySelector('[data-field-name="artifactKind"]')).toBeTruthy();
+    expect(inputsForm.querySelector('[data-field-name="audience"]')).toBeTruthy();
+    expect(inputsForm.querySelector('[data-field-name="template"]')).toBeTruthy();
+    expect(inputsForm.querySelector('[data-field-name="fidelity"]')).toBeNull();
+    expect(inputsForm.querySelector('[data-field-name="designSystem"]')).toBeNull();
 
     fireEvent.click(screen.getByTestId('home-hero-submit'));
 
@@ -778,12 +797,21 @@ describe('HomeView prompt handoff', () => {
     const applyCall = fetchMock.mock.calls.find(([url]) => (
       typeof url === 'string' && url.includes('/api/plugins/example-web-prototype/apply')
     ));
+    // The preset card seeds the prompt as plain text; the chip's structured
+    // inputs are preserved (artifactKind / fidelity / audience / template all
+    // round-trip). designSystem is the one field the preset prompt literally
+    // names ("...using the active project design system..."), so the host's
+    // prompt-extraction reads that auto-placeholder back out of the prompt
+    // text — the value submitted reflects the prompt, not the footer's Refly
+    // default. (Pre-migration this path rebound `active` with empty inputs;
+    // the Lexical migration keeps the chip inputs but lets prompt-extraction
+    // own designSystem.)
     expect(JSON.parse(String((applyCall?.[1] as RequestInit).body))).toMatchObject({
       inputs: {
         artifactKind: 'web prototype',
         fidelity: 'high-fidelity',
         audience: 'product evaluators',
-        designSystem: 'Refly Design System',
+        designSystem: 'the active project design system',
         template: 'the bundled web prototype seed',
       },
     });
@@ -791,7 +819,9 @@ describe('HomeView prompt handoff', () => {
       pluginId: 'example-web-prototype',
       projectKind: 'prototype',
       prompt: 'Build a high-fidelity web prototype for product evaluators using the active project design system from the bundled web prototype seed.',
-      designSystemId: 'ds-refly',
+      // designSystemId resolves to null because the prompt-extracted
+      // designSystem is the auto placeholder, not a concrete option.
+      designSystemId: null,
       projectMetadata: expect.objectContaining({
         kind: 'prototype',
         fidelity: 'high-fidelity',
@@ -1342,6 +1372,18 @@ describe('HomeView prompt handoff', () => {
     }));
   });
 });
+
+// An empty Lexical editor renders `<p><br></p>` (a placeholder break node), so
+// the DOM serializer in `homeHeroPromptText()` reads that lone `<br>` back as
+// `'\n'`. The editor's real text is empty — `.textContent` is `''` — so this
+// reads the empty case precisely without weakening the genuine-content path.
+function homeHeroPromptValue(): string {
+  const text = homeHeroPromptText();
+  if (text === '\n' && (screen.getByTestId('home-hero-input').textContent ?? '') === '') {
+    return '';
+  }
+  return text;
+}
 
 // Replace the Lexical editor's text the way a user edit would, then let the
 // editor's OnChange → host `onPromptChange` React state update flush a

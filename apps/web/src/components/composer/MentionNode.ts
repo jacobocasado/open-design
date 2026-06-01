@@ -66,7 +66,13 @@ export class MentionNode extends TextNode {
     this.__token = p.token;
     this.__label = p.label;
     this.__title = p.title;
-    this.setMode('token'); // atomic: single caret stop, whole-node delete
+    // NOTE: token mode is applied in $createMentionNode, NOT here. Calling
+    // this.setMode('token') in the constructor recurses to a stack overflow:
+    // setMode → getWritable → (for an existing node) clone() → new
+    // MentionNode → setMode → … This crashed on every mention delete/select
+    // (where Lexical clones the node via getWritable). Lexical's clone
+    // protocol copies __mode from the previous node in TextNode.afterCloneFrom,
+    // so clones preserve token mode without re-running setMode.
   }
 
   getEntity(): InlineMentionEntity {
@@ -146,7 +152,13 @@ export class MentionNode extends TextNode {
 }
 
 export function $createMentionNode(p: MentionPayload): MentionNode {
-  return new MentionNode(p);
+  // setMode here (on a freshly-created node, before it is cloned) is safe:
+  // getWritable returns the node itself, so there is no clone recursion. All
+  // later clones inherit the mode via TextNode.afterCloneFrom. Keep token
+  // mode out of the constructor (see the note there).
+  const node = new MentionNode(p);
+  node.setMode('token'); // atomic: single caret stop, whole-node delete
+  return node;
 }
 
 export function $isMentionNode(n: LexicalNode | null | undefined): n is MentionNode {

@@ -1,4 +1,4 @@
-import type { CSSProperties } from 'react';
+import type { ChangeEvent, ClipboardEvent, CSSProperties } from 'react';
 import { useRef } from 'react';
 
 import type { PreviewCommentSnapshot } from '../comments';
@@ -232,6 +232,10 @@ export function BoardComposerPopover({
   onRemoveMember,
   onHoverMember,
   onDeleteComment,
+  images = [],
+  onAttachImages,
+  onRemoveImage,
+  onPreviewImage,
   sending,
   t,
   scale = 1,
@@ -253,6 +257,11 @@ export function BoardComposerPopover({
   onRemoveMember: (elementId: string) => void;
   onHoverMember?: (elementId: string | null) => void;
   onDeleteComment?: (commentId: string) => void | Promise<void>;
+  /** Object-URL thumbnails for images the user attached to this comment. */
+  images?: { file: File; url: string }[];
+  onAttachImages?: (files: File[]) => void;
+  onRemoveImage?: (index: number) => void;
+  onPreviewImage?: (index: number) => void;
   sending: boolean;
   t: TranslateFn;
   scale?: number;
@@ -265,7 +274,26 @@ export function BoardComposerPopover({
   const hasCommentChange = !existing || draft.trim() !== existing.note.trim();
   const podMembers = target.podMembers ?? [];
   const composingRef = useRef(false);
-  const sendDisabled = pendingCount === 0 || sending;
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
+  // An attached image alone is enough to send (the element context rides along
+  // even without a typed note).
+  const sendDisabled = (pendingCount === 0 && images.length === 0) || sending;
+  function pickImages(list: FileList | null) {
+    const imgs = Array.from(list ?? []).filter((f) => f.type.startsWith('image/'));
+    if (imgs.length > 0) onAttachImages?.(imgs);
+  }
+  function onImageInputChange(e: ChangeEvent<HTMLInputElement>) {
+    pickImages(e.target.files);
+    e.target.value = '';
+  }
+  function onComposerPaste(e: ClipboardEvent<HTMLTextAreaElement>) {
+    const files = e.clipboardData?.files;
+    if (!files || files.length === 0) return;
+    const imgs = Array.from(files).filter((f) => f.type.startsWith('image/'));
+    if (imgs.length === 0) return;
+    e.preventDefault();
+    onAttachImages?.(imgs);
+  }
   return (
     <div
       className={`comment-popover${docked ? ' comment-popover-docked' : ''}`}
@@ -332,6 +360,32 @@ export function BoardComposerPopover({
               ))}
             </div>
           ) : null}
+          {images.length > 0 ? (
+            <div className="comment-popover-images">
+              {images.map((item, index) => (
+                <div key={item.url} className="comment-popover-image">
+                  <button
+                    type="button"
+                    className="comment-popover-image-thumb"
+                    onClick={() => onPreviewImage?.(index)}
+                    title={item.file.name}
+                    aria-label={item.file.name}
+                  >
+                    <img src={item.url} alt="" aria-hidden />
+                  </button>
+                  <button
+                    type="button"
+                    className="comment-popover-image-remove"
+                    onClick={() => onRemoveImage?.(index)}
+                    aria-label={t('chat.annotationAttachedRemove')}
+                    title={t('chat.annotationAttachedRemove')}
+                  >
+                    <Icon name="close" size={10} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : null}
           <textarea
             data-testid="comment-popover-input"
             value={draft}
@@ -339,6 +393,7 @@ export function BoardComposerPopover({
             aria-label={t('chat.comments.placeholder')}
             placeholder={t('chat.comments.placeholder')}
             onChange={(event) => onDraft(event.target.value)}
+            onPaste={onComposerPaste}
             onCompositionStart={() => {
               composingRef.current = true;
             }}
@@ -361,6 +416,27 @@ export function BoardComposerPopover({
           />
           <div className="comment-popover-actions">
             <div className="comment-popover-actions-start">
+              {onAttachImages ? (
+                <>
+                  <input
+                    ref={imageInputRef}
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    style={{ display: 'none' }}
+                    onChange={onImageInputChange}
+                  />
+                  <button
+                    type="button"
+                    className="comment-popover-close"
+                    onClick={() => imageInputRef.current?.click()}
+                    title={t('chat.annotationAttachImage')}
+                    aria-label={t('chat.annotationAttachImage')}
+                  >
+                    <Icon name="attach" size={13} />
+                  </button>
+                </>
+              ) : null}
               {existing && onDeleteComment ? (
                 <button
                   type="button"

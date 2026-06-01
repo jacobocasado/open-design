@@ -3,6 +3,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   $createParagraphNode,
+  $getNodeByKey,
   $getRoot,
   createEditor,
   type LexicalEditor,
@@ -86,6 +87,51 @@ describe('MentionNode', () => {
       },
       { discrete: true },
     );
+  });
+
+  it('survives cloning an existing node without recursing (token-mode regression)', () => {
+    // Regression: the constructor used to call `this.setMode('token')`, which
+    // recurses setMode → getWritable → clone() → new MentionNode → setMode …
+    // whenever Lexical clones an EXISTING mention node. That happens on every
+    // mention delete / range-select, so the editor crashed with a
+    // "Maximum call stack size exceeded" RangeError. Token mode now lives in
+    // $createMentionNode and clones inherit it via TextNode.afterCloneFrom.
+    const editor = makeEditor();
+    let key = '';
+    editor.update(
+      () => {
+        const p = $createParagraphNode();
+        const node = $createMentionNode({
+          mentionId: 'p1',
+          mentionKind: 'plugin',
+          token: '@Deck',
+          label: 'Deck',
+        });
+        p.append(node);
+        $getRoot().clear();
+        $getRoot().append(p);
+        key = node.getKey();
+      },
+      { discrete: true },
+    );
+
+    // A second update that mutates the existing node forces Lexical to clone
+    // it through getWritable — the exact path that used to stack-overflow.
+    expect(() =>
+      editor.update(
+        () => {
+          const node = $getNodeByKey(key);
+          if ($isMentionNode(node)) node.getWritable();
+        },
+        { discrete: true },
+      ),
+    ).not.toThrow();
+
+    editor.getEditorState().read(() => {
+      const node = $getNodeByKey(key);
+      expect($isMentionNode(node)).toBe(true);
+      expect(node && node.getMode()).toBe('token');
+    });
   });
 
   it('renders a kind-scoped pill span in the DOM when mounted in an editor', () => {
