@@ -1134,7 +1134,9 @@ export function listPreviewComments(db: SqliteDb, projectId: string, conversatio
 export function upsertPreviewComment(db: SqliteDb, projectId: string, conversationId: string, input: DbRow) {
   const target = input?.target ?? {};
   const note = typeof input?.note === 'string' ? input.note.trim() : '';
-  if (!note) throw new Error('comment note required');
+  const attachments = normalizePreviewCommentAttachments(input?.attachments);
+  // A comment must carry either a note or at least one image attachment.
+  if (!note && attachments.length === 0) throw new Error('comment note required');
   const filePath = cleanRequiredString(target.filePath, 'filePath');
   const elementId = cleanRequiredString(target.elementId, 'elementId');
   const selector = cleanRequiredString(target.selector, 'selector');
@@ -1145,7 +1147,6 @@ export function upsertPreviewComment(db: SqliteDb, projectId: string, conversati
   const selectionKind = target.selectionKind === 'pod' ? 'pod' : 'element';
   const podMembers = selectionKind === 'pod' ? normalizePodMembers(target.podMembers) : [];
   const style = normalizeAnnotationStyle(target.style);
-  const attachments = normalizePreviewCommentAttachments(input?.attachments);
   const memberCount = selectionKind === 'pod'
     ? (podMembers.length > 0
         ? podMembers.length

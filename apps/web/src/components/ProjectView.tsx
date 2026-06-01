@@ -708,6 +708,7 @@ export function ProjectView({
   const reattachControllersRef = useRef<Map<string, AbortController>>(new Map());
   const reattachCancelControllersRef = useRef<Map<string, AbortController>>(new Map());
   const completedReattachRunsRef = useRef<Set<string>>(new Set());
+  const startingQueuedChatSendIdRef = useRef<string | null>(null);
   const skillCache = useRef<Map<string, string>>(new Map());
   const designCache = useRef<Map<string, string>>(new Map());
   const templateCache = useRef<Map<string, ProjectTemplate>>(new Map());
@@ -2373,20 +2374,20 @@ export function ProjectView({
       meta?: ProjectChatSendMeta,
       baseMessages?: ChatMessage[],
     ) => {
-      if (!activeConversationId) return;
-      if (messagesConversationIdRef.current !== activeConversationId) return;
+      if (!activeConversationId) return false;
+      if (messagesConversationIdRef.current !== activeConversationId) return false;
       const runSessionMode = meta?.sessionMode ?? activeSessionMode;
       const retryTarget = meta?.retryOfAssistantId
         ? resolveRetryTarget(messages, meta.retryOfAssistantId)
         : null;
-      if (meta?.retryOfAssistantId && !retryTarget) return;
+      if (meta?.retryOfAssistantId && !retryTarget) return false;
       const historyBase = retryTarget ? retryTarget.priorMessages : baseMessages ?? messages;
       if (
         !retryTarget &&
         !prompt.trim() &&
         attachments.length === 0 &&
         commentAttachments.length === 0
-      ) return;
+      ) return false;
       if (!retryTarget && meta?.queueOnly) {
         queueChatSendForCurrentConversation({
           conversationId: activeConversationId,
@@ -2395,7 +2396,7 @@ export function ProjectView({
           commentAttachments,
           meta: { ...(meta ?? {}), sessionMode: runSessionMode },
         });
-        return;
+        return false;
       }
       if (currentConversationBusy) {
         queueChatSendForCurrentConversation({
@@ -2405,7 +2406,7 @@ export function ProjectView({
           commentAttachments,
           meta: { ...(meta ?? {}), sessionMode: runSessionMode },
         });
-        return;
+        return false;
       }
       setChatSeed(null);
       const runConversationId = activeConversationId;
@@ -2837,7 +2838,7 @@ export function ProjectView({
       if (config.mode === 'daemon') {
         if (!config.agentId) {
           handlers.onError(new Error('Pick a local agent first (top bar).'));
-          return;
+          return true;
         }
         const choice = effectiveSelectedAgentChoice;
         // v2 analytics: when the active project is a DS workspace
@@ -2929,6 +2930,7 @@ export function ProjectView({
             persistAssistantSoon();
           },
         });
+        return true;
       } else {
         // Mirror the daemon chat-route memory hook for BYOK chats. The
         // CLI path runs `extractFromMessage` BEFORE composing the prompt
@@ -3024,6 +3026,7 @@ export function ProjectView({
           // "use default". Other protocols ignore unknown body fields.
           byokImageModel: byokImageModelOverride || config.byokImageModel,
         });
+        return true;
       }
     },
     [
@@ -3064,30 +3067,40 @@ export function ProjectView({
       prioritizeQueuedChatSend(id);
       return;
     }
-    removeQueuedChatSend(id);
-    void handleSend(
-      item.prompt,
-      item.attachments,
-      item.commentAttachments,
-      item.meta,
-    );
+    void (async () => {
+      const started = await handleSend(
+        item.prompt,
+        item.attachments,
+        item.commentAttachments,
+        item.meta,
+      );
+      if (started) removeQueuedChatSend(id);
+    })();
   }, [currentConversationBusy, handleSend, prioritizeQueuedChatSend, removeQueuedChatSend]);
 
   useEffect(() => {
+    if (currentConversationBusy) {
+      startingQueuedChatSendIdRef.current = null;
+      return;
+    }
+    if (startingQueuedChatSendIdRef.current) return;
     if (!activeConversationId) return;
-    if (currentConversationBusy) return;
     if (messagesConversationIdRef.current !== activeConversationId) return;
     const next = queuedChatSendsRef.current.find(
       (item) => item.conversationId === activeConversationId,
     );
     if (!next) return;
-    removeQueuedChatSend(next.id);
-    void handleSend(
-      next.prompt,
-      next.attachments,
-      next.commentAttachments,
-      next.meta,
-    );
+    startingQueuedChatSendIdRef.current = next.id;
+    void (async () => {
+      const started = await handleSend(
+        next.prompt,
+        next.attachments,
+        next.commentAttachments,
+        next.meta,
+      );
+      if (started) removeQueuedChatSend(next.id);
+      else startingQueuedChatSendIdRef.current = null;
+    })();
   }, [
     activeConversationId,
     currentConversationBusy,

@@ -6306,7 +6306,9 @@ const [manualEditTargets, setManualEditTargets] = useState<ManualEditTarget[]>([
   }
 
   async function savePersistentComment() {
-    if (!activeCommentTarget || !commentDraft.trim() || !onSavePreviewComment) return;
+    if (!activeCommentTarget || !onSavePreviewComment) return;
+    // Allow saving when there is text OR an attached image (image-only notes).
+    if (!commentDraft.trim() && boardImages.length === 0) return;
     const isFreePin = activeCommentTarget.elementId.startsWith('pin-');
     setSendingBoardBatch(true);
     try {

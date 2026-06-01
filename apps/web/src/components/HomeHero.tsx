@@ -15,6 +15,7 @@ import {
   useRef,
   useState,
 } from 'react';
+import { createPortal } from 'react-dom';
 import type {
   CSSProperties,
   DragEvent as ReactDragEvent,
@@ -227,6 +228,8 @@ export const HomeHero = forwardRef<HomeHeroHandle, Props>(function HomeHero(
   const [dragActive, setDragActive] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [selectedPromptExample, setSelectedPromptExample] = useState<SelectedPromptExample | null>(null);
+  const [previewHomeFileKey, setPreviewHomeFileKey] = useState<string | null>(null);
+  const [stagedFilePreviewUrls, setStagedFilePreviewUrls] = useState<Map<string, string>>(() => new Map());
   // Lexical-driven @-trigger state (replaces the old end-anchored
   // getContextMention regex) + the caret box the popover anchors to.
   const [mentionTrigger, setMentionTrigger] = useState<{ query: string } | null>(null);
@@ -235,6 +238,11 @@ export const HomeHero = forwardRef<HomeHeroHandle, Props>(function HomeHero(
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const shortcutsMenuRef = useRef<HTMLDivElement>(null);
   const canSubmit = (prompt.trim().length > 0 || stagedFiles.length > 0) && !submitDisabled;
+  const previewHomeFile = useMemo(() => {
+    if (!previewHomeFileKey) return null;
+    return stagedFiles.find((file, index) => homeFileKey(file, index) === previewHomeFileKey) ?? null;
+  }, [previewHomeFileKey, stagedFiles]);
+  const previewHomeFileUrl = previewHomeFileKey ? stagedFilePreviewUrls.get(previewHomeFileKey) ?? null : null;
   const placeholder = activePluginTitle || activeSkillTitle
     ? t('homeHero.placeholderActive')
     : t('homeHero.placeholder');
@@ -479,6 +487,33 @@ export const HomeHero = forwardRef<HomeHeroHandle, Props>(function HomeHero(
     };
   }, [shortcutsOpen]);
 
+  useEffect(() => {
+    const urls = new Map<string, string>();
+    if (typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function') {
+      stagedFiles.forEach((file, index) => {
+        if (isImageFile(file)) urls.set(homeFileKey(file, index), URL.createObjectURL(file));
+      });
+    }
+    setStagedFilePreviewUrls(urls);
+    return () => {
+      if (typeof URL === 'undefined' || typeof URL.revokeObjectURL !== 'function') return;
+      urls.forEach((url) => URL.revokeObjectURL(url));
+    };
+  }, [stagedFiles]);
+
+  useEffect(() => {
+    if (previewHomeFileKey && !previewHomeFile) setPreviewHomeFileKey(null);
+  }, [previewHomeFileKey, previewHomeFile]);
+
+  useEffect(() => {
+    if (!previewHomeFileKey) return;
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') setPreviewHomeFileKey(null);
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [previewHomeFileKey]);
+
   useImperativeHandle(
     ref,
     (): HomeHeroHandle => ({
@@ -656,12 +691,14 @@ export const HomeHero = forwardRef<HomeHeroHandle, Props>(function HomeHero(
   }
 
   const showActiveContextRow =
+    contextItemCount > 0 ||
     (showActivePluginChip && activePluginTitle) ||
     activeSkillTitle ||
     selectedPromptExample ||
     selectedPluginContexts.length > 0 ||
     selectedMcpContexts.length > 0 ||
-    selectedConnectorContexts.length > 0;
+    selectedConnectorContexts.length > 0 ||
+    stagedFiles.length > 0;
 
   let optionRenderIndex = 0;
 
@@ -699,7 +736,72 @@ export const HomeHero = forwardRef<HomeHeroHandle, Props>(function HomeHero(
         onDrop={handleDrop}
       >
         {showActiveContextRow ? (
-          <div className="home-hero__active">
+          <div
+            className="home-hero__active"
+            aria-label={
+              contextItemCount > 0
+                ? t('homeHero.contextItemsResolved', { n: contextItemCount })
+                : undefined
+            }
+          >
+            {stagedFiles.length > 0 ? (
+              <span className="home-hero__active-file-group" data-testid="home-hero-staged-files">
+                {stagedFiles.map((file, index) => {
+                  const key = homeFileKey(file, index);
+                  const previewUrl = stagedFilePreviewUrls.get(key) ?? null;
+                  const fileBody = (
+                    <>
+                      {previewUrl ? (
+                        <img
+                          className="home-hero__active-thumb"
+                          src={previewUrl}
+                          alt=""
+                          aria-hidden
+                          draggable={false}
+                        />
+                      ) : (
+                        <span className="home-hero__active-icon" aria-hidden>
+                          <Icon name={isImageFile(file) ? 'image' : 'file'} size={12} />
+                        </span>
+                      )}
+                      <span className="home-hero__active-label">{file.name}</span>
+                      <span className="home-hero__active-meta">{formatFileSize(file.size)}</span>
+                    </>
+                  );
+                  return (
+                    <span
+                      key={key}
+                      className="home-hero__active-chip home-hero__active-chip--context home-hero__active-chip--file"
+                      title={`${file.name} · ${formatFileSize(file.size)}`}
+                    >
+                      {previewUrl ? (
+                        <button
+                          type="button"
+                          className="home-hero__active-chip-body home-hero__active-file-body"
+                          onClick={() => setPreviewHomeFileKey(key)}
+                          aria-label={`Preview ${file.name}`}
+                        >
+                          {fileBody}
+                        </button>
+                      ) : (
+                        <span className="home-hero__active-file-body">
+                          {fileBody}
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        className="home-hero__active-clear"
+                        onClick={() => removeFileChip(index, file)}
+                        aria-label={t('chat.removeAria', { name: file.name })}
+                        title={t('homeHero.removeFile')}
+                      >
+                        <Icon name="close" size={9} />
+                      </button>
+                    </span>
+                  );
+                })}
+              </span>
+            ) : null}
             {selectedPluginContexts.map((plugin) => (
               <span
                 key={plugin.id}
@@ -712,8 +814,10 @@ export const HomeHero = forwardRef<HomeHeroHandle, Props>(function HomeHero(
                   onClick={() => onOpenPluginDetails(plugin)}
                   title={t('homeHero.pluginTitle', { title: plugin.title })}
                 >
-                  <span className="home-hero__active-dot" aria-hidden />
-                  <span>{plugin.title}</span>
+                  <span className="home-hero__active-icon" aria-hidden>
+                    <Icon name="sliders" size={12} />
+                  </span>
+                  <span className="home-hero__active-label">{plugin.title}</span>
                 </button>
                 <button
                   type="button"
@@ -722,7 +826,7 @@ export const HomeHero = forwardRef<HomeHeroHandle, Props>(function HomeHero(
                   aria-label={t('homeHero.removePluginAria', { title: plugin.title })}
                   title={t('homeHero.removePlugin')}
                 >
-                  ×
+                  <Icon name="close" size={9} />
                 </button>
               </span>
             ))}
@@ -734,8 +838,10 @@ export const HomeHero = forwardRef<HomeHeroHandle, Props>(function HomeHero(
                   className="home-hero__active-chip home-hero__active-chip--context"
                   data-testid={`home-hero-context-mcp-${server.id}`}
                 >
-                  <span className="home-hero__active-dot" aria-hidden />
-                  <span>{label}</span>
+                  <span className="home-hero__active-icon" aria-hidden>
+                    <Icon name="link" size={12} />
+                  </span>
+                  <span className="home-hero__active-label">{label}</span>
                   <button
                     type="button"
                     className="home-hero__active-clear"
@@ -743,7 +849,7 @@ export const HomeHero = forwardRef<HomeHeroHandle, Props>(function HomeHero(
                     aria-label={t('chat.removeAria', { name: label })}
                     title={t('common.delete')}
                   >
-                    ×
+                    <Icon name="close" size={9} />
                   </button>
                 </span>
               );
@@ -754,8 +860,10 @@ export const HomeHero = forwardRef<HomeHeroHandle, Props>(function HomeHero(
                 className="home-hero__active-chip home-hero__active-chip--context"
                 data-testid={`home-hero-context-connector-${connector.id}`}
               >
-                <span className="home-hero__active-dot" aria-hidden />
-                <span>{connector.name}</span>
+                <span className="home-hero__active-icon" aria-hidden>
+                  <Icon name="link" size={12} />
+                </span>
+                <span className="home-hero__active-label">{connector.name}</span>
                 <button
                   type="button"
                   className="home-hero__active-clear"
@@ -763,7 +871,7 @@ export const HomeHero = forwardRef<HomeHeroHandle, Props>(function HomeHero(
                   aria-label={t('chat.removeAria', { name: connector.name })}
                   title={t('common.delete')}
                 >
-                  ×
+                  <Icon name="close" size={9} />
                 </button>
               </span>
             ))}
@@ -784,8 +892,10 @@ export const HomeHero = forwardRef<HomeHeroHandle, Props>(function HomeHero(
                   disabled={!activePluginRecord}
                   title={activePluginRecord ? t('homeHero.pluginTitle', { title: activePluginRecord.title }) : undefined}
                 >
-                  <span className="home-hero__active-dot" aria-hidden />
-                  <span>{activePluginTitle}</span>
+                  <span className="home-hero__active-icon" aria-hidden>
+                    <Icon name="sliders" size={12} />
+                  </span>
+                  <span className="home-hero__active-label">{activePluginTitle}</span>
                 </button>
                 {activeCreateChip ? null : (
                   <button
@@ -795,7 +905,7 @@ export const HomeHero = forwardRef<HomeHeroHandle, Props>(function HomeHero(
                     aria-label={t('homeHero.clearActivePlugin')}
                     title={t('homeHero.clearActivePlugin')}
                   >
-                    ×
+                    <Icon name="close" size={9} />
                   </button>
                 )}
               </span>
@@ -805,8 +915,10 @@ export const HomeHero = forwardRef<HomeHeroHandle, Props>(function HomeHero(
                 className="home-hero__active-chip home-hero__active-chip--skill"
                 data-testid="home-hero-active-skill"
               >
-                <span className="home-hero__active-dot" aria-hidden />
-                <span>{t('homeHero.skillPrefix', { title: activeSkillTitle })}</span>
+                <span className="home-hero__active-icon" aria-hidden>
+                  <Icon name="sparkles" size={12} />
+                </span>
+                <span className="home-hero__active-label">{t('homeHero.skillPrefix', { title: activeSkillTitle })}</span>
                 <button
                   type="button"
                   className="home-hero__active-clear"
@@ -814,7 +926,7 @@ export const HomeHero = forwardRef<HomeHeroHandle, Props>(function HomeHero(
                   aria-label={t('homeHero.clearActiveSkill')}
                   title={t('homeHero.clearActiveSkill')}
                 >
-                  ×
+                  <Icon name="close" size={9} />
                 </button>
               </span>
             ) : null}
@@ -823,8 +935,10 @@ export const HomeHero = forwardRef<HomeHeroHandle, Props>(function HomeHero(
                 className="home-hero__active-chip home-hero__active-chip--example"
                 data-testid="home-hero-active-example"
               >
-                <span className="home-hero__active-dot" aria-hidden />
-                <span>{t('homeHero.promptExamples')}: {selectedPromptExample.label}</span>
+                <span className="home-hero__active-icon" aria-hidden>
+                  <Icon name="pencil" size={12} />
+                </span>
+                <span className="home-hero__active-label">{t('homeHero.promptExamples')}: {selectedPromptExample.label}</span>
                 <button
                   type="button"
                   className="home-hero__active-clear"
@@ -832,7 +946,7 @@ export const HomeHero = forwardRef<HomeHeroHandle, Props>(function HomeHero(
                   aria-label={t('common.close')}
                   title={t('common.close')}
                 >
-                  ×
+                  <Icon name="close" size={9} />
                 </button>
               </span>
             ) : null}
@@ -883,34 +997,6 @@ export const HomeHero = forwardRef<HomeHeroHandle, Props>(function HomeHero(
             />
           ) : null}
         </div>
-        {stagedFiles.length > 0 ? (
-          <div className="home-hero__attachments" data-testid="home-hero-staged-files">
-            {stagedFiles.map((file, index) => (
-              <span
-                key={homeFileKey(file, index)}
-                className="home-hero__attachment-chip"
-                title={`${file.name} · ${formatFileSize(file.size)}`}
-              >
-                <span className="home-hero__attachment-icon" aria-hidden>
-                  <Icon name={isImageFile(file) ? 'image' : 'file'} size={13} />
-                </span>
-                <span className="home-hero__attachment-name">{file.name}</span>
-                <span className="home-hero__attachment-size">
-                  {formatFileSize(file.size)}
-                </span>
-                <button
-                  type="button"
-                  className="home-hero__attachment-remove"
-                  onClick={() => removeFileChip(index, file)}
-                  aria-label={t('chat.removeAria', { name: file.name })}
-                  title={t('homeHero.removeFile')}
-                >
-                  <Icon name="close" size={10} />
-                </button>
-              </span>
-            ))}
-          </div>
-        ) : null}
         <CaretFloatingLayer caret={caretRect} open={pickerOpen}>
           <div
             id="home-hero-context-picker"
@@ -1157,6 +1243,34 @@ export const HomeHero = forwardRef<HomeHeroHandle, Props>(function HomeHero(
         <div role="alert" className="home-hero__error">
           {error}
         </div>
+      ) : null}
+      {previewHomeFile && previewHomeFileUrl ? createPortal(
+        <div
+          className="staged-preview-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-label={previewHomeFile.name}
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setPreviewHomeFileKey(null);
+          }}
+        >
+          <div className="staged-preview-card">
+            <div className="staged-preview-head">
+              <span title={previewHomeFile.name}>{previewHomeFile.name}</span>
+              <button
+                type="button"
+                className="icon-only"
+                onClick={() => setPreviewHomeFileKey(null)}
+                aria-label={t('common.close')}
+                title={t('common.close')}
+              >
+                <Icon name="close" size={14} />
+              </button>
+            </div>
+            <img src={previewHomeFileUrl} alt={previewHomeFile.name} />
+          </div>
+        </div>,
+        document.body,
       ) : null}
     </section>
   );

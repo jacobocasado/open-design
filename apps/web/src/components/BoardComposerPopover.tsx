@@ -274,13 +274,17 @@ export function BoardComposerPopover({
   commenting?: boolean;
 }) {
   const pendingCount = notes.length + (draft.trim() ? 1 : 0);
-  const hasCommentChange = !existing || draft.trim() !== existing.note.trim();
   const podMembers = target.podMembers ?? [];
   const composingRef = useRef(false);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   // An attached image alone is enough to send (the element context rides along
   // even without a typed note).
   const sendDisabled = (pendingCount === 0 && images.length === 0) || sending;
+  const isPodSelection = target.selectionKind === 'pod';
+  // Comment (save) is allowed whenever there is text OR a freshly attached
+  // image — it no longer requires the text to have changed, so users can save
+  // an image-only note or re-save after only adding an image.
+  const saveDisabled = (!draft.trim() && images.length === 0) || sending;
   function pickImages(list: FileList | null) {
     const imgs = Array.from(list ?? []).filter((f) => f.type.startsWith('image/'));
     if (imgs.length > 0) onAttachImages?.(imgs);
@@ -425,8 +429,13 @@ export function BoardComposerPopover({
                 (event.metaKey || event.ctrlKey)
               ) {
                 event.preventDefault();
-                if (sendDisabled) return;
-                void onSendBatch();
+                // Enter triggers the primary CTA: comment (save) for element
+                // selections, send-to-chat for pod selections.
+                if (isPodSelection) {
+                  if (!sendDisabled) void onSendBatch();
+                } else if (!saveDisabled) {
+                  void onSaveComment();
+                }
               }
             }}
           />
@@ -476,36 +485,52 @@ export function BoardComposerPopover({
               )}
             </div>
             <div className="comment-popover-actions-end">
-              {target.selectionKind === 'pod' ? (
-                <button
-                  type="button"
-                  className="ghost"
-                  data-testid="comment-popover-add-note"
-                  disabled={!draft.trim()}
-                  onClick={onAddDraft}
-                >
-                  {t('chat.comments.addNote')}
-                </button>
+              {isPodSelection ? (
+                <>
+                  {/* Pod: add-note is secondary, send-to-chat is the primary CTA. */}
+                  <button
+                    type="button"
+                    className="ghost"
+                    data-testid="comment-popover-add-note"
+                    disabled={!draft.trim()}
+                    onClick={onAddDraft}
+                  >
+                    {t('chat.comments.addNote')}
+                  </button>
+                  <button
+                    type="button"
+                    className="primary"
+                    data-testid="comment-add-send"
+                    disabled={sendDisabled}
+                    onClick={() => void onSendBatch()}
+                  >
+                    {sending ? t('chat.comments.sending') : t('chat.comments.sendToChat')}
+                  </button>
+                </>
               ) : (
-                <button
-                  type="button"
-                  className="ghost"
-                  data-testid="comment-popover-save"
-                  disabled={!draft.trim() || !hasCommentChange}
-                  onClick={() => void onSaveComment()}
-                >
-                  {t('chat.comments.comment')}
-                </button>
+                <>
+                  {/* Element: comment (save) is the primary CTA (also Enter);
+                      send-to-chat is secondary. */}
+                  <button
+                    type="button"
+                    className="ghost"
+                    data-testid="comment-add-send"
+                    disabled={sendDisabled}
+                    onClick={() => void onSendBatch()}
+                  >
+                    {sending ? t('chat.comments.sending') : t('chat.comments.sendToChat')}
+                  </button>
+                  <button
+                    type="button"
+                    className="primary"
+                    data-testid="comment-popover-save"
+                    disabled={saveDisabled}
+                    onClick={() => void onSaveComment()}
+                  >
+                    {t('chat.comments.comment')}
+                  </button>
+                </>
               )}
-              <button
-                type="button"
-                className="primary"
-                data-testid="comment-add-send"
-                disabled={sendDisabled}
-                onClick={() => void onSendBatch()}
-              >
-                {sending ? t('chat.comments.sending') : t('chat.comments.sendToChat')}
-              </button>
             </div>
           </div>
         </section>
