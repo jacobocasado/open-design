@@ -797,21 +797,18 @@ describe('HomeView prompt handoff', () => {
     const applyCall = fetchMock.mock.calls.find(([url]) => (
       typeof url === 'string' && url.includes('/api/plugins/example-web-prototype/apply')
     ));
-    // The preset card seeds the prompt as plain text; the chip's structured
-    // inputs are preserved (artifactKind / fidelity / audience / template all
-    // round-trip). designSystem is the one field the preset prompt literally
-    // names ("...using the active project design system..."), so the host's
-    // prompt-extraction reads that auto-placeholder back out of the prompt
-    // text — the value submitted reflects the prompt, not the footer's Refly
-    // default. (Pre-migration this path rebound `active` with empty inputs;
-    // the Lexical migration keeps the chip inputs but lets prompt-extraction
-    // own designSystem.)
+    // The preset card seeds the prompt as plain text while preserving the
+    // chip's structured inputs (artifactKind / fidelity / audience /
+    // designSystem / template all round-trip). Seeding the editor does NOT
+    // re-run the host's prompt-extraction (HomeHero suppresses the seed echo
+    // in onChange), so designSystem keeps the chip/footer default rather than
+    // being re-read from the prompt text.
     expect(JSON.parse(String((applyCall?.[1] as RequestInit).body))).toMatchObject({
       inputs: {
         artifactKind: 'web prototype',
         fidelity: 'high-fidelity',
         audience: 'product evaluators',
-        designSystem: 'the active project design system',
+        designSystem: 'Refly Design System',
         template: 'the bundled web prototype seed',
       },
     });
@@ -819,9 +816,7 @@ describe('HomeView prompt handoff', () => {
       pluginId: 'example-web-prototype',
       projectKind: 'prototype',
       prompt: 'Build a high-fidelity web prototype for product evaluators using the active project design system from the bundled web prototype seed.',
-      // designSystemId resolves to null because the prompt-extracted
-      // designSystem is the auto placeholder, not a concrete option.
-      designSystemId: null,
+      designSystemId: 'ds-refly',
       projectMetadata: expect.objectContaining({
         kind: 'prototype',
         fidelity: 'high-fidelity',

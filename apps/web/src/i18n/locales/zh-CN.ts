@@ -1579,6 +1579,7 @@ export const zhCN: Dict = {
   'chat.queuedEditQueuedTaskAria': '编辑排队任务',
   'chat.queuedSave': '保存',
   'chat.queuedCancel': '取消',
+  'chat.queuedReorder': '拖动调整顺序',
   'chat.queuedEdit': '编辑',
   'chat.queuedMore': '个排队',
   'chat.queuedFollowUpFallback': '已排队的后续任务',

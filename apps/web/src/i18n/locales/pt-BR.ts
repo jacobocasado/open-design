@@ -927,6 +927,7 @@ export const ptBR: Dict = {
   'chat.queuedEditQueuedTaskAria': 'Edit queued task',
   'chat.queuedSave': 'Save',
   'chat.queuedCancel': 'Cancel',
+  'chat.queuedReorder': 'Drag to reorder',
   'chat.queuedEdit': 'Edit',
   'chat.queuedMore': 'more queued',
   'chat.queuedFollowUpFallback': 'Queued follow-up',

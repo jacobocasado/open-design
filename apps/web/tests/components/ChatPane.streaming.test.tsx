@@ -23,6 +23,7 @@ const translations: Record<string, string> = {
   'chat.queuedEditQueuedTaskAria': 'Edit queued task',
   'chat.queuedSave': 'Save',
   'chat.queuedCancel': 'Cancel',
+  'chat.queuedReorder': 'Drag to reorder',
   'chat.queuedEdit': 'Edit',
   'chat.queuedMore': 'more queued',
   'chat.queuedFollowUpFallback': 'Queued follow-up',
@@ -107,6 +108,26 @@ class MockResizeObserver {
   }
 }
 
+function mockDataTransfer(): DataTransfer {
+  const store = new Map<string, string>();
+  return {
+    dropEffect: 'none',
+    effectAllowed: 'uninitialized',
+    files: [] as unknown as FileList,
+    items: [] as unknown as DataTransferItemList,
+    types: [],
+    clearData: vi.fn((type?: string) => {
+      if (type) store.delete(type);
+      else store.clear();
+    }),
+    getData: vi.fn((type: string) => store.get(type) ?? ''),
+    setData: vi.fn((type: string, data: string) => {
+      store.set(type, data);
+    }),
+    setDragImage: vi.fn(),
+  };
+}
+
 beforeEach(() => {
   MockResizeObserver.instances = [];
   vi.stubGlobal('ResizeObserver', MockResizeObserver);
@@ -133,9 +154,11 @@ describe('ChatPane streaming state', () => {
     expect(css).toContain('align-items: center;');
     expect(css).toContain('.chat-queued-send-title');
     expect(css).toContain('text-overflow: ellipsis;');
+    expect(css).toContain('.chat-queued-send-drag-handle');
+    expect(css).toContain('max-width: min(calc(100% - 20px), 520px);');
     expect(css).toContain('.chat-queued-send-action');
-    expect(css).toContain('width: 26px;');
-    expect(css).toContain('height: 26px;');
+    expect(css).toContain('width: 24px;');
+    expect(css).toContain('height: 24px;');
   });
 
   it('exposes retry only for the last failed assistant when the pane is idle', () => {
@@ -429,10 +452,11 @@ Expected output:
     expect(container.querySelector('.todo-in_progress')).toBeNull();
     expect(container.querySelector('.op-todo-current')).toBeNull();
   });
-  it('shows several queued prompts above the composer before collapsing overflow', () => {
+  it('shows several queued prompts above the composer with compact controls', () => {
     const onRemoveQueuedSend = vi.fn();
     const onSendQueuedNow = vi.fn();
     const onUpdateQueuedSend = vi.fn();
+    const onReorderQueuedSends = vi.fn();
     const { container } = render(
       <ChatPane
         messages={[]}
@@ -468,6 +492,7 @@ Expected output:
         onRemoveQueuedSend={onRemoveQueuedSend}
         onSendQueuedNow={onSendQueuedNow}
         onUpdateQueuedSend={onUpdateQueuedSend}
+        onReorderQueuedSends={onReorderQueuedSends}
         onEnsureProject={async () => 'project-1'}
         onSend={vi.fn()}
         onStop={vi.fn()}
@@ -484,14 +509,14 @@ Expected output:
     expect(strip?.textContent).toContain('5 Queued');
     expect(strip?.textContent).toContain('to Send');
     expect(strip?.textContent).not.toContain('Start Multitasking');
-    expect(container.querySelectorAll('.chat-queued-send-row')).toHaveLength(4);
+    expect(container.querySelectorAll('.chat-queued-send-row')).toHaveLength(5);
     expect(strip?.textContent).toContain('Make the export button larger and use a warmer accent');
     expect(strip?.textContent).toContain('Then adjust the title spacing');
     expect(strip?.textContent).toContain('Reduce the subtitle size');
     expect(strip?.textContent).toContain('Switch to a lighter font weight');
-    expect(strip?.textContent).toContain('+1');
-    expect(container.querySelector('.chat-queued-send-overflow')?.textContent).toContain('+1');
-    expect(strip?.textContent).not.toContain('Add hover polish');
+    expect(strip?.textContent).toContain('Add hover polish');
+    expect(container.querySelector('.chat-queued-send-overflow')).toBeNull();
+    expect(screen.getAllByRole('button', { name: 'Drag to reorder' })).toHaveLength(5);
 
     const sendNowButtons = screen.getAllByRole('button', { name: 'chat.send' });
     fireEvent.click(sendNowButtons[1]!);
@@ -530,6 +555,62 @@ Expected output:
     const removeButtons = screen.getAllByRole('button', { name: 'chat.comments.remove' });
     fireEvent.click(removeButtons[1]!);
     expect(onRemoveQueuedSend).toHaveBeenCalledWith('queued-2');
+  });
+
+  it('reorders queued prompts with the drag handle', () => {
+    const onReorderQueuedSends = vi.fn();
+    const { container } = render(
+      <ChatPane
+        messages={[]}
+        streaming
+        error={null}
+        projectId="project-1"
+        projectFiles={[]}
+        queuedItems={[
+          { id: 'queued-1', prompt: 'First queued follow-up' },
+          { id: 'queued-2', prompt: 'Second queued follow-up' },
+          { id: 'queued-3', prompt: 'Third queued follow-up' },
+        ]}
+        onReorderQueuedSends={onReorderQueuedSends}
+        onEnsureProject={async () => 'project-1'}
+        onSend={vi.fn()}
+        onStop={vi.fn()}
+        conversations={conversations}
+        activeConversationId="conv-1"
+        onSelectConversation={vi.fn()}
+        onDeleteConversation={vi.fn()}
+        projectMetadata={projectMetadata}
+      />,
+    );
+
+    const rows = container.querySelectorAll('.chat-queued-send-row');
+    const handles = screen.getAllByRole('button', { name: 'Drag to reorder' });
+    const dataTransfer = mockDataTransfer();
+    const targetRect = {
+      top: 0,
+      height: 30,
+      bottom: 30,
+      left: 0,
+      right: 300,
+      width: 300,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    };
+    Object.defineProperty(rows[2]!, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => targetRect,
+    });
+
+    fireEvent.dragStart(handles[0]!, { dataTransfer });
+    fireEvent.dragOver(rows[2]!, { dataTransfer, clientY: 29 });
+    fireEvent.drop(rows[2]!, { dataTransfer, clientY: 29 });
+
+    expect(onReorderQueuedSends).toHaveBeenCalledWith([
+      'queued-2',
+      'queued-3',
+      'queued-1',
+    ]);
   });
 
   it('falls back to the localized queued follow-up label for blank prompts', () => {

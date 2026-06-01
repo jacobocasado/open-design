@@ -124,6 +124,7 @@ import type {
   Project,
   ProjectMetadata,
   PreviewComment,
+  PreviewCommentAttachment,
   PreviewCommentTarget,
   ProjectFile,
   ProjectTemplate,
@@ -1831,9 +1832,21 @@ export function ProjectView({
   }, [project.id, activeConversationId]);
 
   const savePreviewComment = useCallback(
-    async (target: PreviewCommentTarget, note: string, attachAfterSave: boolean) => {
+    async (target: PreviewCommentTarget, note: string, attachAfterSave: boolean, images: File[] = []) => {
       if (!activeConversationId) return null;
-      const saved = await upsertPreviewComment(project.id, activeConversationId, { target, note });
+      // Upload any attached images first so the saved comment carries durable
+      // file paths — this is what lets the comment list / re-opened popover
+      // re-display the images instead of losing them on echo.
+      let attachments: PreviewCommentAttachment[] | undefined;
+      if (images.length > 0) {
+        const result = await uploadProjectFiles(project.id, images);
+        attachments = result.uploaded.map((file) => ({ path: file.path, name: file.name }));
+      }
+      const saved = await upsertPreviewComment(project.id, activeConversationId, {
+        target,
+        note,
+        ...(attachments && attachments.length > 0 ? { attachments } : {}),
+      });
       if (!saved) return null;
       setPreviewComments((current) => {
         const rest = current.filter((comment) => comment.id !== saved.id);
@@ -2301,6 +2314,31 @@ export function ProjectView({
     const next = [item, ...queuedChatSendsRef.current.filter((candidate) => candidate.id !== id)];
     commitQueuedChatSends(next);
   }, [commitQueuedChatSends]);
+
+  const reorderCurrentConversationQueuedChatSends = useCallback((orderedIds: string[]) => {
+    if (!activeConversationId || orderedIds.length === 0) return;
+    const order = new Map(orderedIds.map((id, index) => [id, index]));
+    const current = queuedChatSendsRef.current;
+    const originalConversationItems = current.filter(
+      (item) => item.conversationId === activeConversationId,
+    );
+    const sortedConversationItems = [...originalConversationItems].sort((a, b) => {
+      const aOrder = order.get(a.id) ?? Number.MAX_SAFE_INTEGER;
+      const bOrder = order.get(b.id) ?? Number.MAX_SAFE_INTEGER;
+      return aOrder - bOrder;
+    });
+    if (
+      sortedConversationItems.every((item, index) => item.id === originalConversationItems[index]?.id)
+    ) {
+      return;
+    }
+    let cursor = 0;
+    const next = current.map((item) => {
+      if (item.conversationId !== activeConversationId) return item;
+      return sortedConversationItems[cursor++] ?? item;
+    });
+    commitQueuedChatSends(next);
+  }, [activeConversationId, commitQueuedChatSends]);
 
   const queueChatSendForCurrentConversation = useCallback((input: {
     attachments: ChatAttachment[];
@@ -3821,6 +3859,7 @@ export function ProjectView({
             },
             onRemoveQueuedSend: removeQueuedChatSend,
             onUpdateQueuedSend: updateQueuedChatSend,
+            onReorderQueuedSends: reorderCurrentConversationQueuedChatSends,
             onSendQueuedNow: sendQueuedChatSendNow,
             onAssistantFeedback: handleAssistantFeedback,
           }
@@ -3840,6 +3879,7 @@ export function ProjectView({
       handleStop,
       messages,
       removeQueuedChatSend,
+      reorderCurrentConversationQueuedChatSends,
       sendQueuedChatSendNow,
       updateQueuedChatSend,
     ],
@@ -4718,6 +4758,7 @@ export function ProjectView({
               onStop={handleStop}
               onRemoveQueuedSend={removeQueuedChatSend}
               onUpdateQueuedSend={updateQueuedChatSend}
+              onReorderQueuedSends={reorderCurrentConversationQueuedChatSends}
               onSendQueuedNow={sendQueuedChatSendNow}
               onRequestOpenFile={requestOpenFile}
               onRequestPluginFolderAgentAction={handlePluginFolderAgentAction}

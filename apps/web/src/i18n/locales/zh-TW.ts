@@ -1179,6 +1179,7 @@ export const zhTW: Dict = {
   'chat.queuedEditQueuedTaskAria': 'Edit queued task',
   'chat.queuedSave': 'Save',
   'chat.queuedCancel': 'Cancel',
+  'chat.queuedReorder': '拖曳調整順序',
   'chat.queuedEdit': 'Edit',
   'chat.queuedMore': 'more queued',
   'chat.queuedFollowUpFallback': 'Queued follow-up',

@@ -1899,6 +1899,7 @@ export interface Dict {
   'chat.queuedEditQueuedTaskAria': string;
   'chat.queuedSave': string;
   'chat.queuedCancel': string;
+  'chat.queuedReorder': string;
   'chat.queuedEdit': string;
   'chat.queuedMore': string;
   'chat.queuedFollowUpFallback': string;

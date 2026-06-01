@@ -281,6 +281,9 @@ function migrate(db: SqliteDb): void {
   if (!previewCommentCols.some((c: DbRow) => c.name === 'style_json')) {
     db.exec(`ALTER TABLE preview_comments ADD COLUMN style_json TEXT`);
   }
+  if (!previewCommentCols.some((c: DbRow) => c.name === 'attachments_json')) {
+    db.exec(`ALTER TABLE preview_comments ADD COLUMN attachments_json TEXT`);
+  }
   const deploymentCols = db.prepare(`PRAGMA table_info(deployments)`).all() as DbRow[];
   if (!deploymentCols.some((c: DbRow) => c.name === 'status')) {
     db.exec(`ALTER TABLE deployments ADD COLUMN status TEXT NOT NULL DEFAULT 'ready'`);
@@ -1118,6 +1121,7 @@ export function listPreviewComments(db: SqliteDb, projectId: string, conversatio
               text, position_json AS positionJson, html_hint AS htmlHint,
               selection_kind AS selectionKind, member_count AS memberCount,
               pod_members_json AS podMembersJson, style_json AS styleJson,
+              attachments_json AS attachmentsJson,
               note, status, created_at AS createdAt, updated_at AS updatedAt
          FROM preview_comments
         WHERE project_id = ? AND conversation_id = ?
@@ -1141,6 +1145,7 @@ export function upsertPreviewComment(db: SqliteDb, projectId: string, conversati
   const selectionKind = target.selectionKind === 'pod' ? 'pod' : 'element';
   const podMembers = selectionKind === 'pod' ? normalizePodMembers(target.podMembers) : [];
   const style = normalizeAnnotationStyle(target.style);
+  const attachments = normalizeCommentAttachments(input?.attachments);
   const memberCount = selectionKind === 'pod'
     ? (podMembers.length > 0
         ? podMembers.length
@@ -1162,8 +1167,8 @@ export function upsertPreviewComment(db: SqliteDb, projectId: string, conversati
     `INSERT INTO preview_comments
        (id, project_id, conversation_id, file_path, element_id, selector, label,
         text, position_json, html_hint, selection_kind, member_count, pod_members_json,
-        style_json, note, status, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        style_json, attachments_json, note, status, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(project_id, conversation_id, file_path, element_id) DO UPDATE SET
        selector = excluded.selector,
        label = excluded.label,
@@ -1174,6 +1179,7 @@ export function upsertPreviewComment(db: SqliteDb, projectId: string, conversati
        member_count = excluded.member_count,
        pod_members_json = excluded.pod_members_json,
        style_json = excluded.style_json,
+       attachments_json = excluded.attachments_json,
        note = excluded.note,
        status = 'open',
        updated_at = excluded.updated_at`,
@@ -1192,6 +1198,7 @@ export function upsertPreviewComment(db: SqliteDb, projectId: string, conversati
     selectionKind === 'pod' ? memberCount : null,
     selectionKind === 'pod' ? JSON.stringify(podMembers) : null,
     style ? JSON.stringify(style) : null,
+    attachments.length > 0 ? JSON.stringify(attachments) : null,
     note,
     'open',
     createdAt,
@@ -1229,6 +1236,7 @@ function getPreviewComment(db: SqliteDb, projectId: string, conversationId: stri
               text, position_json AS positionJson, html_hint AS htmlHint,
               selection_kind AS selectionKind, member_count AS memberCount,
               pod_members_json AS podMembersJson, style_json AS styleJson,
+              attachments_json AS attachmentsJson,
               note, status, created_at AS createdAt, updated_at AS updatedAt
          FROM preview_comments
         WHERE id = ? AND project_id = ? AND conversation_id = ?`,
@@ -1261,10 +1269,25 @@ function normalizePreviewComment(row: DbRow) {
           : undefined,
     podMembers: normalizedPodMembers,
     note: row.note,
+    attachments: normalizeCommentAttachments(parseJsonOrUndef(row.attachmentsJson)),
     status: row.status,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
+}
+
+function normalizeCommentAttachments(input: unknown) {
+  if (!Array.isArray(input)) return [];
+  return input
+    .map((item) => {
+      if (!item || typeof item !== 'object') return null;
+      const path = typeof (item as DbRow).path === 'string' ? (item as DbRow).path.trim() : '';
+      if (!path) return null;
+      const rawName = typeof (item as DbRow).name === 'string' ? (item as DbRow).name.trim() : '';
+      return { path, name: rawName || path.split('/').pop() || path };
+    })
+    .filter(Boolean)
+    .slice(0, 20);
 }
 
 function cleanRequiredString(value: unknown, name: string): string {

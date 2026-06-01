@@ -51,6 +51,7 @@ export interface ActiveConversationChatState {
       meta?: ChatSendMeta;
     },
   ) => void;
+  onReorderQueuedSends?: (orderedIds: string[]) => void;
   onSendQueuedNow?: (id: string) => void;
   onAssistantFeedback?: (
     assistantMessage: ChatMessage,
@@ -136,6 +137,7 @@ export function SideChatTab({
           queuedItems={controlledChat?.queuedItems}
           onRemoveQueuedSend={controlledChat?.onRemoveQueuedSend}
           onUpdateQueuedSend={controlledChat?.onUpdateQueuedSend}
+          onReorderQueuedSends={controlledChat?.onReorderQueuedSends}
           onSendQueuedNow={controlledChat?.onSendQueuedNow}
           error={controlledChat ? controlledChat.error : chat.error}
           projectId={projectId}

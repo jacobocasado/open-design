@@ -233,6 +233,7 @@ export function BoardComposerPopover({
   onHoverMember,
   onDeleteComment,
   images = [],
+  existingImages = [],
   onAttachImages,
   onRemoveImage,
   onPreviewImage,
@@ -259,6 +260,8 @@ export function BoardComposerPopover({
   onDeleteComment?: (commentId: string) => void | Promise<void>;
   /** Object-URL thumbnails for images the user attached to this comment. */
   images?: { file: File; url: string }[];
+  /** Already-saved attachment thumbnails (read-only) for a re-opened comment. */
+  existingImages?: { url: string; name: string }[];
   onAttachImages?: (files: File[]) => void;
   onRemoveImage?: (index: number) => void;
   onPreviewImage?: (index: number) => void;
@@ -360,8 +363,21 @@ export function BoardComposerPopover({
               ))}
             </div>
           ) : null}
-          {images.length > 0 ? (
+          {existingImages.length > 0 || images.length > 0 ? (
             <div className="comment-popover-images">
+              {existingImages.map((item) => (
+                <div key={`saved-${item.url}`} className="comment-popover-image">
+                  <a
+                    className="comment-popover-image-thumb"
+                    href={item.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title={item.name}
+                  >
+                    <img src={item.url} alt="" aria-hidden />
+                  </a>
+                </div>
+              ))}
               {images.map((item, index) => (
                 <div key={item.url} className="comment-popover-image">
                   <button

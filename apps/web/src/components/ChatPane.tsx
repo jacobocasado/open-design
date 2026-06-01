@@ -1,4 +1,12 @@
-import { Fragment, useEffect, useRef, useState, type MutableRefObject, type ReactNode } from 'react';
+import {
+  Fragment,
+  useEffect,
+  useRef,
+  useState,
+  type DragEvent as ReactDragEvent,
+  type MutableRefObject,
+  type ReactNode,
+} from 'react';
 import { useAnalytics } from '../analytics/provider';
 import { trackChatPanelClick } from '../analytics/events';
 import { useT } from '../i18n';
@@ -229,6 +237,7 @@ interface Props {
   queuedItems?: QueuedSendItem[];
   onRemoveQueuedSend?: (id: string) => void;
   onUpdateQueuedSend?: (id: string, update: QueuedSendUpdate) => void;
+  onReorderQueuedSends?: (orderedIds: string[]) => void;
   onSendQueuedNow?: (id: string) => void;
   // Names that exist in the project folder. Tool cards and chips use this
   // set to decide whether a path can be opened as a tab.
@@ -375,6 +384,7 @@ export function ChatPane({
   onStop,
   onRemoveQueuedSend,
   onUpdateQueuedSend,
+  onReorderQueuedSends,
   onSendQueuedNow,
   onRequestOpenFile,
   onRequestPluginFolderAgentAction,
@@ -1314,6 +1324,7 @@ export function ChatPane({
             editingId={editingQueuedSendId}
             onEdit={restoreQueuedSendToComposer}
             onRemove={onRemoveQueuedSend}
+            onReorder={onReorderQueuedSends}
             onSendNow={onSendQueuedNow}
           />
           <ChatComposer
@@ -1429,6 +1440,7 @@ function QueuedSendStrip({
   items,
   onEdit,
   onRemove,
+  onReorder,
   onSendNow,
 }: {
   containerRef?: MutableRefObject<HTMLDivElement | null>;
@@ -1436,17 +1448,84 @@ function QueuedSendStrip({
   items: QueuedSendItem[];
   onEdit?: (item: QueuedSendItem) => void;
   onRemove?: (id: string) => void;
+  onReorder?: (orderedIds: string[]) => void;
   onSendNow?: (id: string) => void;
 }) {
   const t = useT();
+  const [dragState, setDragState] = useState<QueuedSendDragState | null>(null);
   if (items.length === 0) return null;
-  const visible = items.slice(0, QUEUED_SEND_VISIBLE_LIMIT);
-  const extra = items.length - visible.length;
+  const canReorder = Boolean(onReorder && items.length > 1);
+
+  const handleDragStart = (
+    event: ReactDragEvent<HTMLButtonElement>,
+    item: QueuedSendItem,
+  ) => {
+    if (!canReorder) return;
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData(QUEUED_SEND_DRAG_MIME, item.id);
+    event.dataTransfer.setData('text/plain', item.id);
+    setDragState({ draggingId: item.id, overId: item.id, edge: null });
+  };
+
+  const handleDragOver = (
+    event: ReactDragEvent<HTMLDivElement>,
+    targetId: string,
+  ) => {
+    if (!canReorder) return;
+    const draggingId = dragState?.draggingId || event.dataTransfer.getData(QUEUED_SEND_DRAG_MIME);
+    if (!draggingId) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    if (draggingId === targetId) {
+      if (dragState?.overId !== targetId || dragState.edge !== null) {
+        setDragState({ draggingId, overId: targetId, edge: null });
+      }
+      return;
+    }
+    const edge = queuedDropEdgeForEvent(event);
+    if (
+      dragState?.draggingId !== draggingId
+      || dragState.overId !== targetId
+      || dragState.edge !== edge
+    ) {
+      setDragState({ draggingId, overId: targetId, edge });
+    }
+  };
+
+  const handleDrop = (
+    event: ReactDragEvent<HTMLDivElement>,
+    targetId: string,
+  ) => {
+    if (!canReorder) return;
+    event.preventDefault();
+    const draggingId =
+      dragState?.draggingId
+      || event.dataTransfer.getData(QUEUED_SEND_DRAG_MIME)
+      || event.dataTransfer.getData('text/plain');
+    if (!draggingId || draggingId === targetId) {
+      setDragState(null);
+      return;
+    }
+    const edge = dragState?.overId === targetId && dragState.edge
+      ? dragState.edge
+      : queuedDropEdgeForEvent(event);
+    const nextIds = reorderQueuedSendIds(items, draggingId, targetId, edge);
+    if (nextIds.join('\0') !== items.map((item) => item.id).join('\0')) {
+      onReorder?.(nextIds);
+    }
+    setDragState(null);
+  };
+
   return (
     <div
       ref={containerRef}
       className="chat-queued-send-strip"
       data-testid="chat-queued-send-strip"
+      onDragLeave={(event) => {
+        const related = event.relatedTarget;
+        if (related instanceof Node && event.currentTarget.contains(related)) return;
+        setDragState(null);
+      }}
     >
       <div className="chat-queued-send-header">
         <div className="chat-queued-send-heading">
@@ -1457,65 +1536,113 @@ function QueuedSendStrip({
           <span>{t('chat.queuedToSend')}</span>
         </div>
       </div>
-      {visible.map((item, index) => (
-        <div
-          className={`chat-queued-send-row${index === 0 ? ' chat-queued-send-row-active' : ''}${
-            editingId === item.id ? ' chat-queued-send-row-editing' : ''
-          }`}
-          key={item.id}
-        >
-          <div className="chat-queued-send-main">
-            <span className="chat-queued-send-title">{summarizeQueuedPrompt(item, t)}</span>
-            <QueuedSendMetaChips item={item} />
-          </div>
-          <div className="chat-queued-send-actions">
-            {onEdit ? (
-              <button
-                type="button"
-                className="chat-queued-send-action"
-                title={t('chat.queuedEdit')}
-                aria-label={t('chat.queuedEdit')}
-                onClick={() => onEdit(item)}
-              >
-                <Icon name="pencil" size={13} />
-              </button>
-            ) : null}
+      {items.map((item, index) => {
+        const isDragging = dragState?.draggingId === item.id;
+        const dropClass = dragState?.overId === item.id
+          && dragState.draggingId !== item.id
+          && dragState.edge
+          ? ` chat-queued-send-row-drop-${dragState.edge}`
+          : '';
+        return (
+          <div
+            className={`chat-queued-send-row${index === 0 ? ' chat-queued-send-row-active' : ''}${
+              editingId === item.id ? ' chat-queued-send-row-editing' : ''
+            }${isDragging ? ' chat-queued-send-row-dragging' : ''}${dropClass}`}
+            key={item.id}
+            onDragOver={(event) => handleDragOver(event, item.id)}
+            onDrop={(event) => handleDrop(event, item.id)}
+          >
             <button
               type="button"
-              className="chat-queued-send-action"
-              title={t('chat.send')}
-              aria-label={t('chat.send')}
-              onClick={() => onSendNow?.(item.id)}
-              disabled={!onSendNow}
+              className="chat-queued-send-drag-handle chat-queued-send-tooltip"
+              title={t('chat.queuedReorder')}
+              data-tooltip={t('chat.queuedReorder')}
+              aria-label={t('chat.queuedReorder')}
+              draggable={canReorder}
+              disabled={!canReorder}
+              onDragStart={(event) => handleDragStart(event, item)}
+              onDragEnd={() => setDragState(null)}
             >
-              <Icon name="arrow-up" size={13} />
+              <Icon name="grip-vertical" size={14} />
             </button>
-            {onRemove ? (
+            <div className="chat-queued-send-main">
+              <span className="chat-queued-send-title">{summarizeQueuedPrompt(item, t)}</span>
+              <QueuedSendMetaChips item={item} />
+            </div>
+            <div className="chat-queued-send-actions">
+              {onEdit ? (
+                <button
+                  type="button"
+                  className="chat-queued-send-action chat-queued-send-tooltip"
+                  title={t('chat.queuedEdit')}
+                  data-tooltip={t('chat.queuedEdit')}
+                  aria-label={t('chat.queuedEdit')}
+                  onClick={() => onEdit(item)}
+                >
+                  <Icon name="pencil" size={13} />
+                </button>
+              ) : null}
               <button
                 type="button"
-                className="chat-queued-send-action"
-                onClick={() => onRemove(item.id)}
-                title={t('chat.comments.remove')}
-                aria-label={t('chat.comments.remove')}
+                className="chat-queued-send-action chat-queued-send-tooltip"
+                title={t('chat.send')}
+                data-tooltip={t('chat.send')}
+                aria-label={t('chat.send')}
+                onClick={() => onSendNow?.(item.id)}
+                disabled={!onSendNow}
               >
-                <Icon name="trash" size={13} />
+                <Icon name="arrow-up" size={13} />
               </button>
-            ) : null}
+              {onRemove ? (
+                <button
+                  type="button"
+                  className="chat-queued-send-action chat-queued-send-tooltip"
+                  onClick={() => onRemove(item.id)}
+                  title={t('chat.comments.remove')}
+                  data-tooltip={t('chat.comments.remove')}
+                  aria-label={t('chat.comments.remove')}
+                >
+                  <Icon name="trash" size={13} />
+                </button>
+              ) : null}
+            </div>
           </div>
-        </div>
-      ))}
-      {extra > 0 ? (
-        <div className="chat-queued-send-overflow">
-          <span className="chat-queued-send-overflow-line" aria-hidden />
-          <span className="chat-queued-send-extra">+{extra}</span>
-          <span>{t('chat.queuedMore')}</span>
-        </div>
-      ) : null}
+        );
+      })}
     </div>
   );
 }
 
-const QUEUED_SEND_VISIBLE_LIMIT = 4;
+const QUEUED_SEND_DRAG_MIME = 'application/x-open-design-queued-send';
+
+type QueuedSendDropEdge = 'before' | 'after';
+
+interface QueuedSendDragState {
+  draggingId: string;
+  overId: string | null;
+  edge: QueuedSendDropEdge | null;
+}
+
+function queuedDropEdgeForEvent(event: ReactDragEvent<HTMLElement>): QueuedSendDropEdge {
+  const rect = event.currentTarget.getBoundingClientRect();
+  return event.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
+}
+
+function reorderQueuedSendIds(
+  items: QueuedSendItem[],
+  draggingId: string,
+  targetId: string,
+  edge: QueuedSendDropEdge,
+): string[] {
+  const ids = items.map((item) => item.id);
+  const from = ids.indexOf(draggingId);
+  if (from < 0) return ids;
+  const [draggedId] = ids.splice(from, 1);
+  const targetIndex = ids.indexOf(targetId);
+  if (targetIndex < 0 || !draggedId) return items.map((item) => item.id);
+  ids.splice(edge === 'after' ? targetIndex + 1 : targetIndex, 0, draggedId);
+  return ids;
+}
 
 function summarizeQueuedPrompt(item: QueuedSendItem, t: TranslateFn): string {
   const normalized = item.prompt.replace(/\s+/g, ' ').trim();

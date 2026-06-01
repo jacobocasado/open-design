@@ -101,7 +101,7 @@ interface Props {
   tabsState: OpenTabsState;
   onTabsStateChange: (next: OpenTabsState) => void;
   previewComments?: PreviewComment[];
-  onSavePreviewComment?: (target: PreviewCommentTarget, note: string, attachAfterSave: boolean) => Promise<PreviewComment | null>;
+  onSavePreviewComment?: (target: PreviewCommentTarget, note: string, attachAfterSave: boolean, images?: File[]) => Promise<PreviewComment | null>;
   onRemovePreviewComment?: (commentId: string) => Promise<void>;
   onSendBoardCommentAttachments?: (attachments: ChatCommentAttachment[], images?: File[]) => Promise<void> | void;
   onPluginFolderAgentAction?: (

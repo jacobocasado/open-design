@@ -772,7 +772,7 @@ interface Props {
   onExportAsPptx?: ((fileName: string) => void) | undefined;
   streaming?: boolean;
   previewComments?: PreviewComment[];
-  onSavePreviewComment?: (target: PreviewCommentTarget, note: string, attachAfterSave: boolean) => Promise<PreviewComment | null>;
+  onSavePreviewComment?: (target: PreviewCommentTarget, note: string, attachAfterSave: boolean, images?: File[]) => Promise<PreviewComment | null>;
   onRemovePreviewComment?: (commentId: string) => Promise<void>;
   onSendBoardCommentAttachments?: (attachments: ChatCommentAttachment[], images?: File[]) => Promise<void> | void;
   onFileSaved?: () => Promise<void> | void;
@@ -2142,6 +2142,7 @@ function commentDisplayLabel(comment: PreviewComment, t: TranslateFn): string {
 
 export function CommentSidePanel({
   comments,
+  projectId,
   selectedIds,
   activeCommentId,
   collapsed,
@@ -2158,6 +2159,7 @@ export function CommentSidePanel({
   composer,
 }: {
   comments: PreviewComment[];
+  projectId?: string;
   selectedIds: Set<string>;
   activeCommentId: string | null;
   collapsed: boolean;
@@ -2274,6 +2276,26 @@ export function CommentSidePanel({
                 </button>
               </div>
               <div className="comment-side-body">{comment.note}</div>
+              {projectId && comment.attachments && comment.attachments.length > 0 ? (
+                <div className="comment-side-attachments">
+                  {comment.attachments.map((attachment) => {
+                    const url = projectRawUrl(projectId, attachment.path);
+                    return (
+                      <a
+                        key={attachment.path}
+                        className="comment-side-attachment"
+                        href={url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        title={attachment.name}
+                        onClick={(event) => event.stopPropagation()}
+                      >
+                        <img src={url} alt={attachment.name} />
+                      </a>
+                    );
+                  })}
+                </div>
+              ) : null}
             </div>
           );
         })}
@@ -3945,7 +3967,7 @@ function HtmlViewer({
   onExportAsPptx?: ((fileName: string) => void) | undefined;
   streaming: boolean;
   previewComments?: PreviewComment[];
-  onSavePreviewComment?: (target: PreviewCommentTarget, note: string, attachAfterSave: boolean) => Promise<PreviewComment | null>;
+  onSavePreviewComment?: (target: PreviewCommentTarget, note: string, attachAfterSave: boolean, images?: File[]) => Promise<PreviewComment | null>;
   onRemovePreviewComment?: (commentId: string) => Promise<void>;
   onSendBoardCommentAttachments?: (attachments: ChatCommentAttachment[], images?: File[]) => Promise<void> | void;
   onFileSaved?: () => Promise<void> | void;
@@ -6292,6 +6314,7 @@ const [manualEditTargets, setManualEditTargets] = useState<ManualEditTarget[]>([
         targetFromSnapshot(activeCommentTarget),
         commentDraft.trim(),
         false,
+        boardImages,
       );
       if (saved) {
         clearBoardComposer();
@@ -6778,6 +6801,12 @@ const [manualEditTargets, setManualEditTargets] = useState<ManualEditTarget[]>([
       onSaveComment={() => { fireCommentPopoverClick('save_comment'); return savePersistentComment(); }}
       onSendBatch={() => { fireCommentPopoverClick('send_to_chat'); return sendBoardBatch(); }}
       images={boardImagePreviews}
+      existingImages={
+        activeComposerComment?.attachments?.map((attachment) => ({
+          url: projectRawUrl(projectId, attachment.path),
+          name: attachment.name,
+        })) ?? []
+      }
       onAttachImages={addBoardImages}
       onRemoveImage={removeBoardImage}
       onPreviewImage={setBoardPreviewIndex}
@@ -6845,6 +6874,7 @@ const [manualEditTargets, setManualEditTargets] = useState<ManualEditTarget[]>([
   const commentSidePanel = commentPanelOpen ? (
     <CommentSidePanel
       comments={visibleSideComments}
+      projectId={projectId}
       selectedIds={selectedSideCommentIds}
       activeCommentId={activeSideCommentId}
       collapsed={commentPortalHost ? false : commentSidePanelCollapsed}
@@ -7556,17 +7586,24 @@ const [manualEditTargets, setManualEditTargets] = useState<ManualEditTarget[]>([
                 }}
               />
             ) : null}
-            {exportToast ? (
-              <div className="comment-toast-anchor">
-                <Toast
-                  message={exportToast.message}
-                  tone={exportToast.tone}
-                  role={exportToast.tone === 'error' ? 'alert' : 'status'}
-                  ttlMs={exportToast.tone === 'loading' ? 8000 : 2200}
-                  onDismiss={() => setExportToast(null)}
-                />
-              </div>
-            ) : null}
+            {/* Portaled to <body> so the screenshot/export toast escapes the
+                preview pane's transform + overflow:hidden (which otherwise made
+                the position:fixed toast resolve against the scaled, clipped pane
+                and never appear). Top placement matches the browser tab's
+                screenshot feedback location. */}
+            {exportToast
+              ? createPortal(
+                  <Toast
+                    message={exportToast.message}
+                    tone={exportToast.tone}
+                    role={exportToast.tone === 'error' ? 'alert' : 'status'}
+                    ttlMs={exportToast.tone === 'loading' ? 8000 : 2200}
+                    placement="top"
+                    onDismiss={() => setExportToast(null)}
+                  />,
+                  document.body,
+                )
+              : null}
             {commentSavedToast ? (
               <div className="comment-toast-anchor">
                 <Toast

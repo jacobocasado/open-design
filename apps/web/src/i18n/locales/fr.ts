@@ -1442,6 +1442,7 @@ export const fr: Dict = {
   'chat.queuedEditQueuedTaskAria': 'Modifier la tâche en file',
   'chat.queuedSave': 'Enregistrer',
   'chat.queuedCancel': 'Annuler',
+  'chat.queuedReorder': 'Drag to reorder',
   'chat.queuedEdit': 'Modifier',
   'chat.queuedMore': 'autres en file',
   'chat.queuedFollowUpFallback': 'Suivi en file',
