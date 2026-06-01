@@ -112,9 +112,25 @@ export interface CreateTerminalMeta {
 }
 
 export function createTerminalService({
-  // Cap the per-session output ring-buffer. Each entry is one PTY data
-  // chunk; the cap bounds reattach scrollback and total memory per session.
+  // Count backstop for the per-session output ring-buffer. The real ceiling is
+  // `maxBufferBytes` below; this only guards against a flood of tiny records.
   maxEvents = 2_000,
+  // Byte ceiling for retained reattach scrollback per running session. Output
+  // is evicted oldest-first (in one batched splice) once this is exceeded, so a
+  // `cat largefile` can't grow a session's buffer without bound.
+  maxBufferBytes = 512 * 1024,
+  // After the shell exits we keep only this much trailing scrollback so an
+  // exited-but-not-yet-reaped session doesn't pin megabytes for the TTL window.
+  exitTailBytes = 64 * 1024,
+  // Coalesce node-pty `onData` chunks for roughly one animation frame before
+  // fanning out a single SSE `data` event. High-throughput output (builds,
+  // `cat`) otherwise fires thousands of JSON.stringify + res.write per second
+  // per client; batching collapses that to ~60/s. xterm.js buffers its own
+  // writes, so a coarser event cadence is invisible to the user.
+  flushIntervalMs = 16,
+  // Flush immediately when buffered output crosses this size so a single burst
+  // can't build an unbounded string or stall behind the frame timer.
+  flushThresholdBytes = 64 * 1024,
   // Drop an exited session from the registry after this idle window so a
   // long-lived daemon doesn't leak terminated sessions.
   ttlMs = 30 * 60 * 1000,
@@ -154,23 +170,79 @@ export function createTerminalService({
     signal: session.signal,
   });
 
+  // Approximate the retained size of an event by its output payload. `data`
+  // events dominate; control events (exit) are negligible.
+  const recordByteLength = (data: any): number =>
+    data && typeof data.data === 'string' ? data.data.length : 0;
+
+  // Evict oldest events in a SINGLE splice once the running session is over the
+  // byte (or count) cap, trimming down to ~75% so eviction is amortized instead
+  // of an O(n) shift on every chunk. Always keeps at least the most recent event.
+  const trimBuffer = (session: any) => {
+    if (session.bufferedBytes <= maxBufferBytes && session.events.length <= maxEvents) return;
+    const targetBytes = Math.floor(maxBufferBytes * 0.75);
+    let dropCount = 0;
+    let freed = 0;
+    for (let i = 0; i < session.events.length - 1; i++) {
+      const overBytes = session.bufferedBytes - freed > targetBytes;
+      const overCount = session.events.length - dropCount > maxEvents;
+      if (!overBytes && !overCount) break;
+      freed += session.events[i].byteLength;
+      dropCount++;
+    }
+    if (dropCount > 0) {
+      session.events.splice(0, dropCount);
+      session.bufferedBytes -= freed;
+    }
+  };
+
   const emit = (session: any, event: string, data: any) => {
     const id = session.nextEventId++;
-    const record = { id, event, data, timestamp: Date.now() };
+    const byteLength = recordByteLength(data);
+    const record = { id, event, data, timestamp: Date.now(), byteLength };
     session.events.push(record);
-    if (session.events.length > maxEvents) session.events.splice(0, session.events.length - maxEvents);
-    session.updatedAt = Date.now();
+    session.bufferedBytes += byteLength;
+    trimBuffer(session);
+    session.updatedAt = record.timestamp;
     for (const sse of session.clients) sse.send(event, data, id);
     return record;
   };
 
+  // Coalesce buffered PTY output into one `data` event. Called on the frame
+  // timer, on a large burst, and right before `exit` so output ordering holds.
+  const flushData = (session: any) => {
+    if (session.flushTimer != null) {
+      clearTimeout(session.flushTimer);
+      session.flushTimer = null;
+    }
+    if (!session.pendingData) return;
+    const chunk = session.pendingData;
+    session.pendingData = '';
+    emit(session, 'data', { data: chunk });
+  };
+
   const finish = (session: any, code: number | null, signal: string | null) => {
     if (TERMINAL_SESSION_TERMINAL_STATUSES.has(session.status)) return;
+    // Emit any output buffered behind the frame timer before the exit marker.
+    flushData(session);
     session.status = 'exited';
     session.exitCode = code;
     session.signal = signal;
     session.updatedAt = Date.now();
     emit(session, 'exit', { code, signal });
+    // Bound the memory an exited-but-not-yet-reaped session pins: keep only the
+    // trailing scrollback (the exit event is last, so it's always retained).
+    let keptBytes = 0;
+    let firstKeep = session.events.length;
+    for (let i = session.events.length - 1; i >= 0; i--) {
+      firstKeep = i;
+      keptBytes += session.events[i].byteLength;
+      if (keptBytes >= exitTailBytes) break;
+    }
+    if (firstKeep > 0) {
+      const dropped = session.events.splice(0, firstKeep);
+      for (const r of dropped) session.bufferedBytes -= r.byteLength;
+    }
     for (const sse of session.clients) sse.end();
     session.clients.clear();
     scheduleCleanup(session);
@@ -202,14 +274,28 @@ export function createTerminalService({
       updatedAt: now,
       exitCode: null as number | null,
       signal: null as string | null,
-      events: [] as Array<{ id: number; event: string; data: any; timestamp: number }>,
+      events: [] as Array<{ id: number; event: string; data: any; timestamp: number; byteLength: number }>,
       nextEventId: 1,
       clients: new Set<any>(),
       pty: child,
+      // Output coalescing buffer (see flushData / the onData handler below).
+      bufferedBytes: 0,
+      pendingData: '',
+      flushTimer: null as ReturnType<typeof setTimeout> | null,
     };
     sessions.set(id, session);
     child.onData((chunk: string) => {
-      emit(session, 'data', { data: chunk });
+      session.pendingData += chunk;
+      // Flush a large burst immediately so the pending string and per-event
+      // latency stay bounded; otherwise coalesce a frame's worth of chunks.
+      if (session.pendingData.length >= flushThresholdBytes) {
+        flushData(session);
+        return;
+      }
+      if (session.flushTimer == null) {
+        session.flushTimer = setTimeout(() => flushData(session), flushIntervalMs);
+        session.flushTimer.unref?.();
+      }
     });
     child.onExit(({ exitCode, signal }: { exitCode: number; signal?: number }) => {
       // node-pty hands back a numeric signal; surface a name when we can
