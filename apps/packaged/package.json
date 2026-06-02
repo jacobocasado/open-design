@@ -13,6 +13,9 @@
     "./headless": {
       "default": "./dist/headless.mjs"
     },
+    "./webui-launcher": {
+      "default": "./dist/webui-launcher.mjs"
+    },
     "./package.json": "./package.json"
   },
   "files": [

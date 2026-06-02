@@ -17,6 +17,10 @@
     "./sidecar": {
       "types": "./dist/sidecar/index.d.ts",
       "default": "./dist/sidecar/index.js"
+    },
+    "./browser-open": {
+      "types": "./dist/browser-open.d.ts",
+      "default": "./dist/browser-open.js"
     }
   },
   "files": [

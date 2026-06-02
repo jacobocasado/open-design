@@ -1,6 +1,11 @@
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { resolveDaemonCliPath, resolveDaemonResourceRoot, resolveProjectRoot } from '../src/server.js';
+import {
+  resolveBundledNodeAppResourcesPath,
+  resolveDaemonCliPath,
+  resolveDaemonResourceRoot,
+  resolveProjectRoot,
+} from '../src/server.js';
 
 describe('resolveProjectRoot', () => {
   it('resolves the repository root from the source daemon directory', () => {
@@ -69,5 +74,34 @@ describe('resolveDaemonResourceRoot', () => {
     expect(() => resolveDaemonResourceRoot({ configured, safeBases: [safeBase] })).toThrow(
       /OD_RESOURCE_ROOT must be under/,
     );
+  });
+
+  // Packaged WebUI (no Electron) layout: the daemon is installed under
+  // <appRoot>/node_modules/@open-design/daemon and OD_RESOURCE_ROOT points at
+  // the sibling <appRoot>/resources/open-design. Launched by the user's system
+  // Node, so process.resourcesPath and the mac/win execPath markers are all
+  // absent — the resources path must be derivable from the node_modules root.
+  it('accepts the packaged WebUI resources path derived from a node_modules project root', () => {
+    const appRoot = path.resolve('/opt/open-design-webui/app');
+    const projectRoot = path.join(appRoot, 'node_modules');
+    const configured = path.join(appRoot, 'resources', 'open-design');
+    const safeBase = resolveBundledNodeAppResourcesPath(projectRoot);
+
+    expect(safeBase).toBe(path.join(appRoot, 'resources'));
+    expect(resolveDaemonResourceRoot({ configured, safeBases: [safeBase] })).toBe(configured);
+  });
+});
+
+describe('resolveBundledNodeAppResourcesPath', () => {
+  it('derives <appRoot>/resources when the daemon is installed under node_modules', () => {
+    const appRoot = path.resolve('/opt/app');
+
+    expect(resolveBundledNodeAppResourcesPath(path.join(appRoot, 'node_modules'))).toBe(
+      path.join(appRoot, 'resources'),
+    );
+  });
+
+  it('returns null for a dev/monorepo project root (no node_modules basename)', () => {
+    expect(resolveBundledNodeAppResourcesPath(path.resolve('/repo'))).toBeNull();
   });
 });

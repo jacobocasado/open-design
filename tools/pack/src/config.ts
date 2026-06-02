@@ -14,6 +14,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const WORKSPACE_ROOT = resolve(__dirname, "../../..");
 
 export type ToolPackPlatform = "mac" | "win" | "linux";
+export type ToolPackArch = "x64" | "arm64";
 export type ToolPackBuildOutput = "all" | "app" | "appimage" | "dir" | "dmg" | "nsis" | "zip";
 export type ToolPackMacCompression = "store" | "normal" | "maximum";
 export type ToolPackWebOutputMode = "server" | "standalone";
@@ -22,6 +23,7 @@ type ToolPackPrereleaseChannel = "beta" | "nightly" | "preview";
 
 export type ToolPackCliOptions = {
   appVersion?: string;
+  arch?: string;
   cacheDir?: string;
   containerized?: boolean;
   dir?: string;
@@ -31,6 +33,7 @@ export type ToolPackCliOptions = {
   macCompression?: string;
   namespace?: string;
   path?: string;
+  platform?: string;
   portable?: boolean;
   removeData?: boolean;
   removeLogs?: boolean;
@@ -60,6 +63,7 @@ export type ToolPackRoots = {
 
 export type ToolPackConfig = {
   appVersion?: string;
+  arch: ToolPackArch;
   containerized: boolean;
   electronBuilderCliPath: string;
   electronDistPath: string;
@@ -127,6 +131,12 @@ function resolveToolPackBuildOutput(platform: ToolPackPlatform, value: string | 
   if (platform === "win" && (value === "all" || value === "dir" || value === "nsis" || value === "zip")) return value;
   if (platform === "linux" && (value === "all" || value === "appimage" || value === "dir")) return value;
   throw new Error(`unsupported ${platform} --to target: ${value}`);
+}
+
+export function resolveToolPackArch(value: unknown): ToolPackArch {
+  const v = typeof value === "string" && value.length > 0 ? value : process.arch;
+  if (v === "x64" || v === "arm64") return v;
+  throw new Error(`unsupported arch: ${String(v)} (expected x64 or arm64)`);
 }
 
 function resolveToolPackMacCompression(value: string | undefined): ToolPackMacCompression {
@@ -304,6 +314,7 @@ export function resolveToolPackConfig(
 
   return {
     appVersion,
+    arch: resolveToolPackArch(options.arch),
     containerized: options.containerized === true,
     electronBuilderCliPath: resolveElectronBuilderCliPath(),
     electronDistPath: resolveElectronDistPath(WORKSPACE_ROOT),

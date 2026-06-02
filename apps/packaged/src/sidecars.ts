@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { access, mkdir, open, type FileHandle } from "node:fs/promises";
+import { access, mkdir, open, readFile, type FileHandle } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { delimiter, dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -141,6 +141,24 @@ async function openLog(path: string): Promise<FileHandle> {
   return await open(path, "w");
 }
 
+/**
+ * Reads the tail of a sidecar log so a startup crash surfaces in the caller's
+ * terminal instead of only in the log file. The packaged sidecars redirect the
+ * child's stdout/stderr straight into `latest.log`, so when a daemon throws
+ * before reporting status (e.g. an OD_RESOURCE_ROOT guard failure) the real
+ * stack trace lives there — embedding it in the thrown error means the launcher
+ * prints it immediately while the full log stays on disk for later inspection.
+ */
+export async function readSidecarLogTail(logPath: string, maxChars = 4000): Promise<string> {
+  try {
+    const content = (await readFile(logPath, "utf8")).trimEnd();
+    if (content.length === 0) return "";
+    return content.length > maxChars ? `…\n${content.slice(-maxChars)}` : content;
+  } catch {
+    return "";
+  }
+}
+
 const DAEMON_STATUS_TIMEOUT_MS = 35_000;
 const DAEMON_MIGRATION_STATUS_TIMEOUT_MS = 30 * 60 * 1000;
 
@@ -200,8 +218,12 @@ export async function waitForStatus<T>(
   try {
     while (Date.now() - startedAt < timeoutMs) {
       if (childExited !== null) {
+        const head = `daemon exited before reporting status (code=${childExited.code}, signal=${childExited.signal ?? 'none'})`;
+        const logTail = watch?.logPath != null ? await readSidecarLogTail(watch.logPath) : "";
         throw new Error(
-          `daemon exited before reporting status (code=${childExited.code}, signal=${childExited.signal ?? 'none'}); see ${watch?.logPath ?? '<no log path>'} for details`,
+          logTail.length > 0
+            ? `${head}:\n${logTail}\n(full log: ${watch?.logPath})`
+            : `${head}; see ${watch?.logPath ?? '<no log path>'} for details`,
         );
       }
       try {
@@ -276,6 +298,19 @@ function createPackagedDaemonManagedPathEnv(
   };
 }
 
+export type PackagedNetworkOptions = {
+  /** web 浏览器访问端口；映射到 web 子进程的 OD_WEB_PORT/PORT。 */
+  webPort?: number | null;
+  /** web 监听 host；映射到 web 子进程的 OD_HOST。 */
+  webHost?: string | null;
+  /** daemon 监听端口；映射到 daemon 的 OD_PORT，默认 0（动态）。 */
+  daemonPort?: number | null;
+  /** daemon 绑定 host；映射到 OD_BIND_HOST。 */
+  bindHost?: string | null;
+  /** daemon API token；映射到 OD_API_TOKEN。 */
+  apiToken?: string | null;
+};
+
 export type PackagedDaemonSpawnEnvOptions = {
   appVersion: string | null;
   amrProfile?: string | null;
@@ -294,6 +329,8 @@ export type PackagedDaemonSpawnEnvOptions = {
   telemetryRelayUrl?: string | null;
   posthogKey?: string | null;
   posthogHost?: string | null;
+  /** webui 网络注入；省略时保持动态端口 + 环回 + 无 token。 */
+  network?: PackagedNetworkOptions | null;
 };
 
 /**
@@ -307,7 +344,7 @@ export function buildPackagedDaemonSpawnEnv(
   options: PackagedDaemonSpawnEnvOptions,
 ): NodeJS.ProcessEnv {
   return {
-    [SIDECAR_ENV.DAEMON_PORT]: "0",
+    [SIDECAR_ENV.DAEMON_PORT]: String(options.network?.daemonPort ?? 0),
     ...(options.daemonCliEntry == null ? {} : { [SIDECAR_ENV.DAEMON_CLI_PATH]: options.daemonCliEntry }),
     // PR #974 round-4 P1 + round-5 P2: pinned ON when a desktop is
     // being started, OFF for headless. The daemon-side flag refuses
@@ -349,6 +386,41 @@ export function buildPackagedDaemonSpawnEnv(
     ...(options.posthogHost == null || options.posthogHost.length === 0
       ? {}
       : { POSTHOG_HOST: options.posthogHost }),
+    ...(options.network?.bindHost == null || options.network.bindHost.length === 0
+      ? {}
+      : { OD_BIND_HOST: options.network.bindHost }),
+    ...(options.network?.apiToken == null || options.network.apiToken.length === 0
+      ? {}
+      : { OD_API_TOKEN: options.network.apiToken }),
+  };
+}
+
+/**
+ * Pure helper: assemble the web sidecar's spawn env.
+ *
+ * Invariant: the web child always reaches the daemon at the daemon's
+ * actually-bound port (`extractPort(daemonUrl)`); `network.webPort` only
+ * sets the web child's OWN listen port (OD_WEB_PORT/PORT) and must never
+ * leak into the daemon-port wiring. Extracted from `startPackagedSidecars`
+ * so this invariant can be pinned by unit tests without spawning children.
+ */
+export function buildPackagedWebSpawnEnv(options: {
+  daemonUrl: string;
+  webStandaloneRoot: string | null;
+  webOutputMode: PackagedWebOutputMode;
+  network?: PackagedNetworkOptions | null;
+}): NodeJS.ProcessEnv {
+  return {
+    [SIDECAR_ENV.DAEMON_PORT]: extractPort(options.daemonUrl),
+    [SIDECAR_ENV.WEB_PORT]: String(options.network?.webPort ?? 0),
+    ...(options.webStandaloneRoot == null
+      ? {}
+      : { OD_WEB_STANDALONE_ROOT: options.webStandaloneRoot }),
+    ...(options.network?.webHost == null || options.network.webHost.length === 0
+      ? {}
+      : { OD_HOST: options.network.webHost }),
+    OD_WEB_OUTPUT_MODE: options.webOutputMode,
+    PORT: String(options.network?.webPort ?? 0),
   };
 }
 
@@ -449,6 +521,7 @@ export async function startPackagedSidecars(
     webSidecarEntry: string | null;
     webStandaloneRoot: string | null;
     webOutputMode: PackagedWebOutputMode;
+    network?: PackagedNetworkOptions | null;
   },
 ): Promise<PackagedSidecarHandle> {
   await mkdir(paths.namespaceRoot, { recursive: true });
@@ -476,6 +549,7 @@ export async function startPackagedSidecars(
         telemetryRelayUrl: options.telemetryRelayUrl,
         posthogKey: options.posthogKey,
         posthogHost: options.posthogHost,
+        network: options.network ?? null,
       }),
       nodeCommand: options.nodeCommand,
       paths,
@@ -498,13 +572,12 @@ export async function startPackagedSidecars(
     const web = await spawnSidecarChild({
       app: APP_KEYS.WEB,
       entryPath: options.webSidecarEntry ?? resolveSidecarEntry("@open-design/web", "sidecar"),
-      env: {
-        [SIDECAR_ENV.DAEMON_PORT]: extractPort(daemonStatus.url),
-        [SIDECAR_ENV.WEB_PORT]: "0",
-        ...(options.webStandaloneRoot == null ? {} : { OD_WEB_STANDALONE_ROOT: options.webStandaloneRoot }),
-        OD_WEB_OUTPUT_MODE: options.webOutputMode,
-        PORT: "0",
-      },
+      env: buildPackagedWebSpawnEnv({
+        daemonUrl: daemonStatus.url,
+        webStandaloneRoot: options.webStandaloneRoot,
+        webOutputMode: options.webOutputMode,
+        network: options.network ?? null,
+      }),
       nodeCommand: options.nodeCommand,
       paths,
       runtime,

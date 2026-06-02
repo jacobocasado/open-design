@@ -49,6 +49,7 @@ async function pathExists(path: string): Promise<boolean> {
 
 function makeConfig(): ToolPackConfig {
   return {
+    arch: "x64",
     containerized: true,
     electronBuilderCliPath: "/x/electron-builder/cli.js",
     electronDistPath: "/x/electron/dist",

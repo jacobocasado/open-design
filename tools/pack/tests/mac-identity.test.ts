@@ -8,6 +8,7 @@ import { resolveMacPaths } from "../src/mac/paths.js";
 
 function makeConfig(root: string, namespace: string): ToolPackConfig {
   return {
+    arch: "x64",
     containerized: false,
     electronBuilderCliPath: "/x/electron-builder/cli.js",
     electronDistPath: "/x/electron/dist",

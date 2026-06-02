@@ -28,7 +28,10 @@ function loadInternalPackageNames(modulePath: string): string[] {
 
 const PACKAGED_APPS = ["apps/desktop", "apps/web", "apps/packaged", "apps/daemon"];
 const PACK_LANES = [
-  { lane: "linux", file: "tools/pack/src/linux.ts" },
+  // The Linux lane's INTERNAL_PACKAGES lives in assemble.ts, the shared
+  // assembly core used by both the Linux AppImage lane and the WebUI lane
+  // (linux.ts re-exports it). Point the coverage check at the definition.
+  { lane: "linux", file: "tools/pack/src/assemble.ts" },
   { lane: "mac", file: "tools/pack/src/mac/constants.ts" },
   { lane: "win", file: "tools/pack/src/win/constants.ts" },
 ];

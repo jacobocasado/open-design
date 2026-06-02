@@ -28,6 +28,7 @@ function resolveToolsPackRoot(startDir: string): string {
 
 export const toolsPackRoot = resolveToolsPackRoot(dirname(fileURLToPath(import.meta.url)));
 export const resourcesRoot = join(toolsPackRoot, "resources");
+export const webuiResourcesRoot = join(resourcesRoot, "webui");
 
 export const macResources = {
   entitlements: join(resourcesRoot, "mac", "entitlements.mac.plist"),

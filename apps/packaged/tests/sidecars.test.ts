@@ -23,10 +23,12 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildPackagedDaemonSpawnEnv,
+  buildPackagedWebSpawnEnv,
   resolveDaemonStatusTimeoutMs,
   resolvePackagedChildBaseEnv,
   resolvePackagedElectronNodeCommand,
   resolvePackagedPathEnv,
+  readSidecarLogTail,
   waitForStatus,
 } from '../src/sidecars.js';
 import type { PackagedNamespacePaths } from '../src/paths.js';
@@ -425,6 +427,47 @@ describe('buildPackagedDaemonSpawnEnv', () => {
   });
 });
 
+describe("buildPackagedDaemonSpawnEnv network injection", () => {
+  const paths = {
+    dataRoot: "/tmp/ns/data",
+    resourceRoot: "/tmp/ns/res",
+    installationRoot: "/tmp/ns/install",
+  } as unknown as import("../src/paths.js").PackagedNamespacePaths;
+
+  it("keeps dynamic daemon port and no token by default (no network)", () => {
+    const env = buildPackagedDaemonSpawnEnv(paths, {
+      appVersion: null,
+      daemonCliEntry: null,
+      requireDesktopAuth: false,
+    });
+    expect(env.OD_PORT).toBe("0");
+    expect(env.OD_BIND_HOST).toBeUndefined();
+    expect(env.OD_API_TOKEN).toBeUndefined();
+  });
+
+  it("injects bind host and token when network is provided", () => {
+    const env = buildPackagedDaemonSpawnEnv(paths, {
+      appVersion: null,
+      daemonCliEntry: null,
+      requireDesktopAuth: false,
+      network: { bindHost: "0.0.0.0", apiToken: "odtoken_xyz", daemonPort: null },
+    });
+    expect(env.OD_BIND_HOST).toBe("0.0.0.0");
+    expect(env.OD_API_TOKEN).toBe("odtoken_xyz");
+    expect(env.OD_PORT).toBe("0");
+  });
+
+  it("honors an explicit daemon port", () => {
+    const env = buildPackagedDaemonSpawnEnv(paths, {
+      appVersion: null,
+      daemonCliEntry: null,
+      requireDesktopAuth: false,
+      network: { daemonPort: 7777, bindHost: null, apiToken: null },
+    });
+    expect(env.OD_PORT).toBe("7777");
+  });
+});
+
 describe('waitForStatus child-exit fast-fail', () => {
   // mrcfps round-7: when OD_LEGACY_DATA_DIR is set the daemon status
   // budget extends to 30 minutes for legitimate large-payload migrations.
@@ -499,5 +542,102 @@ describe('waitForStatus child-exit fast-fail', () => {
     expect((captured as Error).message).toMatch(/daemon exited before reporting status/);
     expect((captured as Error).message).toContain('code=2');
     expect(elapsed).toBeLessThan(2_000);
+  });
+
+  it('embeds the daemon log tail in the error so the crash surfaces in the terminal', async () => {
+    // The packaged sidecars redirect the daemon's stdout/stderr into
+    // latest.log, so a startup crash (e.g. the OD_RESOURCE_ROOT guard) only
+    // lives in that file. waitForStatus must read it back and embed it in the
+    // thrown error — the launcher writes error.message to stderr, so the real
+    // stack trace prints in the terminal first while the full log stays on disk.
+    const dir = mkdtempSync(join(tmpdir(), 'od-log-tail-'));
+    const logPath = join(dir, 'latest.log');
+    const crash =
+      'Error: OD_RESOURCE_ROOT must be under the workspace root or app resources path\n' +
+      '    at resolveDaemonResourceRoot (.../server.js:660:15)';
+    writeFileSync(logPath, `${crash}\n`);
+
+    const child = fakeChild();
+    const promise = waitForStatus<{ url: string | null }>(
+      '/tmp/od-test-no-such-ipc-tail-' + Date.now(),
+      (status) => status.url != null,
+      30 * 60 * 1000,
+      { child, logPath },
+    );
+    setTimeout(() => child.fireExit(1, null), 50);
+
+    let captured: unknown;
+    try {
+      await promise;
+    } catch (err) {
+      captured = err;
+    }
+
+    expect(captured).toBeInstanceOf(Error);
+    const message = (captured as Error).message;
+    expect(message).toContain('OD_RESOURCE_ROOT must be under');
+    expect(message).toContain('resolveDaemonResourceRoot');
+    // Full log path still pointed to for later inspection.
+    expect(message).toContain(logPath);
+
+    rmSync(dir, { force: true, recursive: true });
+  });
+});
+
+describe('readSidecarLogTail', () => {
+  it('returns the trimmed tail and caps overly long logs', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'od-log-tail-cap-'));
+    const logPath = join(dir, 'latest.log');
+    const body = 'x'.repeat(10_000);
+    writeFileSync(logPath, `head-marker\n${body}\n\n`);
+
+    const tail = await readSidecarLogTail(logPath, 4000);
+    expect(tail.length).toBeLessThanOrEqual(4000 + 2);
+    expect(tail.startsWith('…\n')).toBe(true);
+    // Trailing blank lines are trimmed.
+    expect(tail.endsWith('x')).toBe(true);
+
+    rmSync(dir, { force: true, recursive: true });
+  });
+
+  it('returns empty string when the log is missing or empty', async () => {
+    expect(await readSidecarLogTail('/tmp/od-no-such-log-' + Date.now())).toBe('');
+  });
+});
+
+describe('buildPackagedWebSpawnEnv', () => {
+  it('defaults to dynamic web port and no OD_HOST when no network', () => {
+    const env = buildPackagedWebSpawnEnv({
+      daemonUrl: 'http://127.0.0.1:7456',
+      webStandaloneRoot: null,
+      webOutputMode: 'server',
+    });
+    expect(env.OD_WEB_PORT).toBe('0');
+    expect(env.PORT).toBe('0');
+    expect(env.OD_HOST).toBeUndefined();
+    expect(env.OD_WEB_OUTPUT_MODE).toBe('server');
+  });
+
+  it('injects web host and web port from network', () => {
+    const env = buildPackagedWebSpawnEnv({
+      daemonUrl: 'http://127.0.0.1:7456',
+      webStandaloneRoot: null,
+      webOutputMode: 'server',
+      network: { webHost: '0.0.0.0', webPort: 8080 },
+    });
+    expect(env.OD_HOST).toBe('0.0.0.0');
+    expect(env.OD_WEB_PORT).toBe('8080');
+    expect(env.PORT).toBe('8080');
+  });
+
+  it('always wires the daemon port from daemonUrl, never from network.daemonPort', () => {
+    const env = buildPackagedWebSpawnEnv({
+      daemonUrl: 'http://127.0.0.1:55001',
+      webStandaloneRoot: null,
+      webOutputMode: 'server',
+      // a stray daemonPort must NOT leak into the web child's daemon wiring
+      network: { webPort: 8080, daemonPort: 9999 },
+    });
+    expect(env.OD_PORT).toBe('55001');
   });
 });

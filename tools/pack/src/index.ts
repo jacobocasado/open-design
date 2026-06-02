@@ -2,6 +2,7 @@ import { cac } from "cac";
 import type { CAC } from "cac";
 
 import { resolveToolPackConfig, type ToolPackCliOptions, type ToolPackPlatform } from "./config.js";
+import { buildPackedWebui } from "./webui.js";
 import {
   cleanupPackedMacNamespace,
   installPackedMacDmg,
@@ -233,6 +234,34 @@ addBuildOptions(addSharedOptions(cli.command("linux <action>", "Linux packaging 
         throw new Error(`unsupported linux action: ${action}`);
     }
   });
+
+function resolveWebuiPlatform(value: unknown): ToolPackPlatform {
+  if (value === "mac" || value === "win" || value === "linux") return value;
+  if (value == null || value === "") {
+    if (process.platform === "darwin") return "mac";
+    if (process.platform === "win32") return "win";
+    return "linux";
+  }
+  throw new Error(`unsupported --platform: ${String(value)} (expected mac|win|linux)`);
+}
+
+addSharedOptions(
+  cli
+    .command("webui <action>", "WebUI packaging commands: build")
+    .option("--platform <platform>", "Target platform: mac|win|linux (default: host)")
+    .option("--arch <arch>", "Target arch: x64|arm64 (default: host arch)"),
+).action(async (action: string, options: CliOptions) => {
+  const platform = resolveWebuiPlatform(options.platform);
+  // webui 双进程统一用 server 模式（与现有 Linux headless 一致、已验证可运行）
+  const config = { ...resolveToolPackConfig(platform, options), webOutputMode: "server" as const };
+  switch (action) {
+    case "build":
+      printJson(await buildPackedWebui(config));
+      return;
+    default:
+      throw new Error(`unknown webui action: ${action} (expected build)`);
+  }
+});
 
 cli.help();
 cli.parse();

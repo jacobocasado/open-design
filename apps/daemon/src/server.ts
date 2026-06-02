@@ -1151,7 +1151,31 @@ function resolveProcessResourcesPath() {
     );
   }
 
-  return null;
+  // Packaged WebUI (no Electron): the daemon is installed under
+  // <appRoot>/node_modules/@open-design/daemon and OD_RESOURCE_ROOT points at
+  // the sibling <appRoot>/resources/open-design. The user's system Node starts
+  // it, so process.resourcesPath and all the markers above are absent. Derive
+  // <appRoot>/resources from PROJECT_ROOT so the resource-root guard accepts the
+  // bundled tree without widening it to arbitrary paths.
+  return resolveBundledNodeAppResourcesPath(PROJECT_ROOT);
+}
+
+/**
+ * Returns the bundled-resources directory for a packaged no-Electron (WebUI)
+ * install, or null when the daemon is not running from such a layout.
+ *
+ * Invariant: a packaged node-app installs the daemon at
+ * `<appRoot>/node_modules/@open-design/daemon`, so `resolveProjectRoot` reports
+ * `<appRoot>/node_modules` as the project root. The bundled resources live at
+ * the sibling `<appRoot>/resources`. Any other project root (dev/monorepo
+ * checkout) yields null, keeping the OD_RESOURCE_ROOT guard's safe bases tight.
+ */
+export function resolveBundledNodeAppResourcesPath(
+  projectRoot: string,
+): string | null {
+  return path.basename(projectRoot) === 'node_modules'
+    ? path.join(path.dirname(projectRoot), 'resources')
+    : null;
 }
 
 export function resolveDaemonResourceRoot({

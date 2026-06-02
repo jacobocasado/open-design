@@ -1,0 +1,7 @@
+{
+  "port": 7456,
+  "daemonPort": 7457,
+  "host": "127.0.0.1",
+  "token": null,
+  "openBrowser": true
+}

@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Open Design WebUI
+Comment=Start Open Design WebUI in a terminal
+Exec=sh -c 'cd "$(dirname "%k")" && ./open-design.sh start; exec $SHELL'
+Terminal=true
+Categories=Development;
