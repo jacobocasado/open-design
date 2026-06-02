@@ -1270,6 +1270,14 @@ export function FileWorkspace({
 
   const isActiveSketch = activeFile?.kind === 'sketch' && isSketchName(activeFile.name);
   const activeSketch = activeFile && isActiveSketch ? sketches[activeFile.name] : null;
+  const showGenerationPreview = Boolean(generationPreview)
+    && activeTab !== DESIGN_FILES_TAB
+    && activeTab !== DESIGN_SYSTEM_TAB
+    && !isBrowserTabId(activeTab)
+    && !isSideChatTabId(activeTab)
+    && !isTerminalTabId(activeTab)
+    && !activeLiveArtifact
+    && !activeFile;
 
   // The "+" launcher's create-new actions come from the registry. `openTab`
   // reuses the same tab-state path as opening a file so a new chat:<id> /
@@ -1552,10 +1560,15 @@ export function FileWorkspace({
           >
             <DesignBrowserPanel
               projectId={projectId}
+              resolvedDir={resolvedDir}
               initialIconUrl={browserTab.iconUrl}
               initialTitle={browserTab.title}
               initialUrl={browserTab.url}
               sendDisabled={Boolean(streaming)}
+              previewComments={previewComments}
+              onSavePreviewComment={onSavePreviewComment}
+              onRemovePreviewComment={onRemovePreviewComment}
+              onSendBoardCommentAttachments={onSendBoardCommentAttachments}
               onRefreshFiles={onRefreshFiles}
               onOpenFile={openFile}
               onPageInfoChange={(info) => updateBrowserTabInfo(browserTab.id, info)}
@@ -1581,7 +1594,7 @@ export function FileWorkspace({
             onConnectRepo={onConnectRepo}
             githubConnected={githubConnected}
           />
-        ) : generationPreview ? (
+        ) : showGenerationPreview && generationPreview ? (
           <GenerationPreviewStage
             model={generationPreview}
             onRetry={

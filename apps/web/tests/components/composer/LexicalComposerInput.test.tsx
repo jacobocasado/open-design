@@ -5,8 +5,14 @@ import { act, cleanup, render, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   $getRoot,
+  $getSelection,
   $isElementNode,
+  $isRangeSelection,
   $isTextNode,
+  KEY_ARROW_LEFT_COMMAND,
+  KEY_ARROW_RIGHT_COMMAND,
+  KEY_BACKSPACE_COMMAND,
+  KEY_DELETE_COMMAND,
   KEY_ENTER_COMMAND,
   type LexicalEditor,
   type LexicalNode,
@@ -128,6 +134,34 @@ describe('LexicalComposerInput', () => {
       : null;
   }
 
+  function keyEvent(key: string): KeyboardEvent {
+    return {
+      key,
+      shiftKey: false,
+      altKey: false,
+      ctrlKey: false,
+      metaKey: false,
+      preventDefault: vi.fn(),
+    } as unknown as KeyboardEvent;
+  }
+
+  function selectionAnchor(editor: LexicalEditor): {
+    text: string;
+    offset: number;
+  } {
+    let snapshot = { text: '', offset: -1 };
+    editor.getEditorState().read(() => {
+      const selection = $getSelection();
+      expect($isRangeSelection(selection)).toBe(true);
+      if (!$isRangeSelection(selection)) return;
+      snapshot = {
+        text: selection.anchor.getNode().getTextContent(),
+        offset: selection.anchor.offset,
+      };
+    });
+    return snapshot;
+  }
+
   it('deleting a mention pill through the live editor does not stack-overflow (token-mode clone regression)', async () => {
     // The user-facing repro for the MentionNode constructor-recursion crash:
     // seed a pill, then Backspace over it. A backward delete-character on an
@@ -203,6 +237,123 @@ describe('LexicalComposerInput', () => {
     // No new onChange for a pure caret move, and the text round-trips unchanged.
     expect(onChange.mock.calls.length).toBe(callsAfterSeed);
     expect(ref.current?.getText()).toBe(before);
+  });
+
+  it('skips the whole mention pill with one left or right arrow step', async () => {
+    const { getByTestId } = setup({
+      draft: 'Use @designs/landing.html now',
+    });
+    const host = getByTestId('chat-composer-input');
+    await waitFor(() =>
+      expect(host.querySelector('.composer-inline-mention')).not.toBeNull(),
+    );
+    const editor = liveEditor(host);
+
+    act(() => {
+      editor.update(
+        () => {
+          const mention = findMention($getRoot().getFirstChild());
+          if ($isTextNode(mention)) {
+            const offset = mention.getTextContentSize();
+            mention.select(offset, offset);
+          }
+        },
+        { discrete: true },
+      );
+    });
+    const left = keyEvent('ArrowLeft');
+    act(() => {
+      editor.dispatchCommand(KEY_ARROW_LEFT_COMMAND, left);
+    });
+    expect(left.preventDefault).toHaveBeenCalledTimes(1);
+    await waitFor(() =>
+      expect(selectionAnchor(editor)).toEqual({ text: 'Use ', offset: 4 }),
+    );
+
+    const right = keyEvent('ArrowRight');
+    act(() => {
+      editor.dispatchCommand(KEY_ARROW_RIGHT_COMMAND, right);
+    });
+    expect(right.preventDefault).toHaveBeenCalledTimes(1);
+    await waitFor(() => {
+      const afterChip = selectionAnchor(editor);
+      expect(afterChip).toEqual({
+        text: '@designs/landing.html',
+        offset: '@designs/landing.html'.length,
+      });
+    });
+
+    const leftAgain = keyEvent('ArrowLeft');
+    act(() => {
+      editor.dispatchCommand(KEY_ARROW_LEFT_COMMAND, leftAgain);
+    });
+    expect(leftAgain.preventDefault).toHaveBeenCalledTimes(1);
+    await waitFor(() =>
+      expect(selectionAnchor(editor)).toEqual({ text: 'Use ', offset: 4 }),
+    );
+  });
+
+  it('removes a whole mention pill with Backspace from the boundary after it', async () => {
+    const { getByTestId, ref } = setup({
+      draft: 'Use @designs/landing.html now',
+    });
+    const backspaceHost = getByTestId('chat-composer-input');
+    await waitFor(() =>
+      expect(backspaceHost.querySelector('.composer-inline-mention')).not.toBeNull(),
+    );
+    const backspaceEditor = liveEditor(backspaceHost);
+    act(() => {
+      backspaceEditor.update(
+        () => {
+          const mention = findMention($getRoot().getFirstChild());
+          const next = mention?.getNextSibling();
+          if ($isTextNode(next)) next.select(0, 0);
+        },
+        { discrete: true },
+      );
+    });
+    const backspace = keyEvent('Backspace');
+    act(() => {
+      backspaceEditor.dispatchCommand(KEY_BACKSPACE_COMMAND, backspace);
+    });
+    expect(backspace.preventDefault).toHaveBeenCalledTimes(1);
+    await waitFor(() =>
+      expect(backspaceHost.querySelector('.composer-inline-mention')).toBeNull(),
+    );
+    expect(ref.current?.getText()).not.toContain('@designs/landing.html');
+  });
+
+  it('removes a whole mention pill with Delete from the boundary before it', async () => {
+    const { getByTestId, ref } = setup({
+      draft: 'Use @designs/landing.html now',
+    });
+    const deleteHost = getByTestId('chat-composer-input');
+    await waitFor(() =>
+      expect(deleteHost.querySelector('.composer-inline-mention')).not.toBeNull(),
+    );
+    const deleteEditor = liveEditor(deleteHost);
+    act(() => {
+      deleteEditor.update(
+        () => {
+          const mention = findMention($getRoot().getFirstChild());
+          const previous = mention?.getPreviousSibling();
+          if ($isTextNode(previous)) {
+            const offset = previous.getTextContentSize();
+            previous.select(offset, offset);
+          }
+        },
+        { discrete: true },
+      );
+    });
+    const deleteEvent = keyEvent('Delete');
+    act(() => {
+      deleteEditor.dispatchCommand(KEY_DELETE_COMMAND, deleteEvent);
+    });
+    expect(deleteEvent.preventDefault).toHaveBeenCalledTimes(1);
+    await waitFor(() =>
+      expect(deleteHost.querySelector('.composer-inline-mention')).toBeNull(),
+    );
+    expect(ref.current?.getText()).not.toContain('@designs/landing.html');
   });
 
   // TODO(lexical-jsdom): jsdom can't make `editor.isComposing()` return true.

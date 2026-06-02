@@ -21,6 +21,11 @@ import {
   sameUrl,
   saveHistory,
 } from '../../src/components/DesignBrowserPanel';
+import {
+  browserCommentFilePath,
+  isProjectHtmlBrowserUrl,
+  projectRelativePathFromBrowserUrl,
+} from '../../src/components/design-browser-tools';
 
 describe('normalizeBrowserAddress', () => {
   it('passes through absolute http URLs unchanged', () => {
@@ -83,6 +88,32 @@ describe('normalizeBrowserAddress', () => {
 
   it('passes through an explicit about:blank', () => {
     expect(normalizeBrowserAddress('about:blank')).toBe('about:blank');
+  });
+});
+
+describe('browser tool file targeting', () => {
+  it('treats localhost dev-server pages as browser targets, not single-file HTML saves', () => {
+    const url = 'http://localhost:3000/src/App.jsx';
+
+    expect(browserCommentFilePath(url, '/Users/me/project')).toBe(`browser:${url}`);
+    expect(projectRelativePathFromBrowserUrl(url, '/Users/me/project')).toBeNull();
+    expect(isProjectHtmlBrowserUrl(url, '/Users/me/project')).toBe(false);
+  });
+
+  it('maps project-local file HTML pages back to editable project files', () => {
+    const url = 'file:///Users/me/project/dist/index.html';
+
+    expect(browserCommentFilePath(url, '/Users/me/project')).toBe('dist/index.html');
+    expect(projectRelativePathFromBrowserUrl(url, '/Users/me/project')).toBe('dist/index.html');
+    expect(isProjectHtmlBrowserUrl(url, '/Users/me/project')).toBe(true);
+  });
+
+  it('keeps project-local non-HTML files as commentable browser targets without save affordance', () => {
+    const url = 'file:///Users/me/project/src/App.jsx';
+
+    expect(browserCommentFilePath(url, '/Users/me/project')).toBe('src/App.jsx');
+    expect(projectRelativePathFromBrowserUrl(url, '/Users/me/project')).toBe('src/App.jsx');
+    expect(isProjectHtmlBrowserUrl(url, '/Users/me/project')).toBe(false);
   });
 });
 

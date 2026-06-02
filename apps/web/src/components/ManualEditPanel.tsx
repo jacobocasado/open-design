@@ -85,7 +85,7 @@ export function ManualEditPanel({
       layoutEnabled: targetForInspector.isLayoutContainer,
     });
     if (!normalized.ok) {
-      onError(normalized.error);
+      onError('error' in normalized ? normalized.error : 'Invalid style value.');
       onInvalidStyle?.(targetForInspector.id, [key]);
       return;
     }
@@ -171,7 +171,7 @@ export function ManualEditPanel({
               onStyleChange={(styles) => {
                 const normalized = normalizeManualEditStyles(styles, { layoutEnabled: true });
                 if (!normalized.ok) {
-                  onError(normalized.error);
+                  onError('error' in normalized ? normalized.error : 'Invalid style value.');
                   onInvalidStyle?.('__body__', Object.keys(styles) as Array<keyof ManualEditStyles>);
                   return;
                 }

@@ -5,22 +5,46 @@ import {
   useRef,
   useState,
   type ButtonHTMLAttributes,
+  type CSSProperties,
   type FormEvent,
   type ReactNode,
 } from 'react';
-import { flushSync } from 'react-dom';
+import { createPortal, flushSync } from 'react-dom';
 import {
   clearHostBrowserData,
   isOpenDesignHostAvailable,
 } from '@open-design/host';
 import {
   openExternalUrl,
+  projectRawUrl,
   writeProjectBase64File,
   writeProjectTextFile,
 } from '../providers/registry';
 import { useT } from '../i18n';
 import { captureHostRegionSnapshot } from '../runtime/exports';
+import { buildBoardCommentAttachments, commentsToAttachments } from '../comments';
+import type {
+  ChatCommentAttachment,
+  PreviewAnnotationStyle,
+  PreviewComment,
+  PreviewCommentTarget,
+} from '../types';
+import {
+  BROWSER_CANCEL_PICKER_SCRIPT,
+  BROWSER_SERIALIZE_HTML_SCRIPT,
+  BROWSER_VIEWPORT_PRESETS,
+  type BrowserElementSnapshot,
+  browserApplyStyleScript,
+  browserApplyTextScript,
+  browserCommentFilePath,
+  browserElementPickerScript,
+  browserSnapshotFromUnknown,
+  isProjectHtmlBrowserUrl,
+  projectRelativePathFromBrowserUrl,
+  type BrowserViewportId,
+} from './design-browser-tools';
 import { Icon } from './Icon';
+import { BoardComposerPopover } from './BoardComposerPopover';
 import { PreviewDrawOverlay } from './PreviewDrawOverlay';
 import { RemixIcon } from './RemixIcon';
 
@@ -60,6 +84,12 @@ type PageBrief = {
   colors?: { value: string; count: number }[];
 };
 
+type BrowserTool = 'comment' | 'inspect' | 'edit';
+type BrowserStyleDraft = Required<Pick<
+  PreviewAnnotationStyle,
+  'backgroundColor' | 'borderRadius' | 'color' | 'fontSize' | 'fontWeight' | 'lineHeight' | 'paddingTop' | 'textAlign'
+>>;
+
 type WebviewElement = HTMLElement & {
   canGoBack(): boolean;
   canGoForward(): boolean;
@@ -94,9 +124,14 @@ interface DesignBrowserPanelProps {
   initialTitle?: string;
   initialUrl?: string;
   projectId: string;
+  resolvedDir?: string | null;
   onOpenFile: (name: string) => void;
   onRefreshFiles: () => Promise<void> | void;
   onPageInfoChange?: (info: BrowserPageInfo) => void;
+  previewComments?: PreviewComment[];
+  onSavePreviewComment?: (target: PreviewCommentTarget, note: string, attachAfterSave: boolean, images?: File[]) => Promise<PreviewComment | null>;
+  onRemovePreviewComment?: (commentId: string) => Promise<void>;
+  onSendBoardCommentAttachments?: (attachments: ChatCommentAttachment[], images?: File[]) => Promise<boolean | void> | boolean | void;
   sendDisabled?: boolean;
 }
 
@@ -394,9 +429,14 @@ export function DesignBrowserPanel({
   initialTitle,
   initialUrl,
   projectId,
+  resolvedDir,
   onOpenFile,
   onPageInfoChange,
   onRefreshFiles,
+  previewComments = [],
+  onSavePreviewComment,
+  onRemovePreviewComment,
+  onSendBoardCommentAttachments,
   sendDisabled = false,
 }: DesignBrowserPanelProps) {
   const t = useT();
@@ -421,11 +461,24 @@ export function DesignBrowserPanel({
   const [isLoading, setIsLoading] = useState(false);
   const [webviewNode, setWebviewNode] = useState<WebviewElement | null>(null);
   const [drawOverlayOpen, setDrawOverlayOpen] = useState(false);
+  const [viewport, setViewport] = useState<BrowserViewportId>('desktop');
+  const [activeTool, setActiveTool] = useState<BrowserTool | null>(null);
+  const [activeCommentTarget, setActiveCommentTarget] = useState<BrowserElementSnapshot | null>(null);
+  const [activePreviewCommentId, setActivePreviewCommentId] = useState<string | null>(null);
+  const [commentDraft, setCommentDraft] = useState('');
+  const [queuedCommentNotes, setQueuedCommentNotes] = useState<string[]>([]);
+  const [browserImages, setBrowserImages] = useState<File[]>([]);
+  const [browserImagePreviews, setBrowserImagePreviews] = useState<{ file: File; url: string }[]>([]);
+  const [browserPreviewIndex, setBrowserPreviewIndex] = useState<number | null>(null);
+  const [sendingComment, setSendingComment] = useState(false);
+  const [savingDomEdit, setSavingDomEdit] = useState(false);
+  const [textDraft, setTextDraft] = useState('');
   const [captureChromeHidden, setCaptureChromeHidden] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [savingAction, setSavingAction] = useState<'brief' | 'screenshot' | null>(null);
   const addressInputRef = useRef<HTMLInputElement | null>(null);
   const chromeRef = useRef<HTMLDivElement | null>(null);
+  const pickerRequestIdRef = useRef(0);
   const restoredIconUrlRef = useRef(initialIconUrl?.trim() ?? '');
   const restoredTitleRef = useRef(initialTitle?.trim() ?? '');
   const navigationStackRef = useRef<BrowserNavigationEntry[]>(initialState.navigationStack);
@@ -770,6 +823,22 @@ export function DesignBrowserPanel({
   // Drive the start-page/webview branch off the load target, not the committed
   // URL, so a transient about:blank navigation event can't unmount the webview.
   const isBlank = loadUrl === EMPTY_URL;
+  const browserFilePath = isBlank ? browserCommentFilePath(EMPTY_URL) : browserCommentFilePath(currentUrl, resolvedDir);
+  const editableProjectHtml = !isBlank && isProjectHtmlBrowserUrl(currentUrl, resolvedDir);
+  const visibleComments = previewComments
+    .filter((comment) => comment.filePath === browserFilePath && comment.status === 'open')
+    .sort((left, right) => left.createdAt - right.createdAt);
+  const activeSavedComment = activePreviewCommentId
+    ? visibleComments.find((comment) => comment.id === activePreviewCommentId) ?? null
+    : null;
+
+  useEffect(() => {
+    const next = browserImages.map((file) => ({ file, url: URL.createObjectURL(file) }));
+    setBrowserImagePreviews(next);
+    return () => {
+      next.forEach((item) => URL.revokeObjectURL(item.url));
+    };
+  }, [browserImages]);
 
   useEffect(() => {
     onPageInfoChange?.({
@@ -778,6 +847,20 @@ export function DesignBrowserPanel({
       ...(!isBlank && pageIconUrl ? { iconUrl: pageIconUrl } : {}),
     });
   }, [currentUrl, isBlank, onPageInfoChange, pageIconUrl, pageTitle]);
+
+  useEffect(() => {
+    pickerRequestIdRef.current += 1;
+    setActiveTool(null);
+    setActiveCommentTarget(null);
+    setActivePreviewCommentId(null);
+    setCommentDraft('');
+    setQueuedCommentNotes([]);
+    setBrowserImages([]);
+    setBrowserPreviewIndex(null);
+    setTextDraft('');
+    void cancelBrowserPicker();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [browserFilePath]);
 
   async function handleAddressSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -930,7 +1013,7 @@ export function DesignBrowserPanel({
       return;
     }
     const result = await clearHostBrowserData({ cookies: true, storage });
-    setStatusMessage(result.ok ? 'Browser data cleared' : result.reason);
+    setStatusMessage(result.ok ? 'Browser data cleared' : 'reason' in result ? result.reason : 'Browser data clear failed');
     if (storage) {
       setHistory([]);
       setLoadUrl(EMPTY_URL);
@@ -993,6 +1076,312 @@ export function DesignBrowserPanel({
     setMenuOpen(false);
   }
 
+  async function cancelBrowserPicker() {
+    pickerRequestIdRef.current += 1;
+    try {
+      await webviewNode?.executeJavaScript(BROWSER_CANCEL_PICKER_SCRIPT, true);
+    } catch {
+      // The picker script only exists after a page is loaded; ignore misses.
+    }
+  }
+
+  function clearBrowserTool() {
+    void cancelBrowserPicker();
+    setActiveTool(null);
+    setActiveCommentTarget(null);
+    setActivePreviewCommentId(null);
+    setCommentDraft('');
+    setQueuedCommentNotes([]);
+    setBrowserImages([]);
+    setBrowserPreviewIndex(null);
+    setTextDraft('');
+  }
+
+  async function pickBrowserElement(tool: BrowserTool) {
+    if (isBlank || !webviewNode) {
+      setStatusMessage('Open a page before using browser tools');
+      return;
+    }
+    const requestId = pickerRequestIdRef.current + 1;
+    pickerRequestIdRef.current = requestId;
+    setActiveTool(tool);
+    setActiveCommentTarget(null);
+    setActivePreviewCommentId(null);
+    setCommentDraft('');
+    setQueuedCommentNotes([]);
+    setBrowserImages([]);
+    setBrowserPreviewIndex(null);
+    setTextDraft('');
+    setDrawOverlayOpen(false);
+    setMenuOpen(false);
+    setStatusMessage(tool === 'comment' ? 'Click an element to comment' : 'Click an element to tune');
+    try {
+      await webviewNode.executeJavaScript(BROWSER_CANCEL_PICKER_SCRIPT, true);
+      const result = await webviewNode.executeJavaScript<unknown>(
+        browserElementPickerScript(browserFilePath),
+        true,
+      );
+      if (pickerRequestIdRef.current !== requestId) return;
+      const snapshot = browserSnapshotFromUnknown(result, browserFilePath);
+      if (!snapshot) {
+        setStatusMessage('No browser element selected');
+        setActiveTool(null);
+        return;
+      }
+      setActiveCommentTarget(snapshot);
+      setTextDraft(snapshot.text);
+      setActiveTool(tool);
+      setStatusMessage(
+        tool === 'comment'
+          ? 'Add a browser comment'
+          : editableProjectHtml
+            ? 'Tune the element, then save HTML'
+            : 'Tune is live only for non-project pages',
+      );
+    } catch (error) {
+      if (pickerRequestIdRef.current !== requestId) return;
+      setStatusMessage(error instanceof Error ? error.message : 'Browser element picker failed');
+      setActiveTool(null);
+    }
+  }
+
+  function toggleBrowserTool(tool: BrowserTool) {
+    if (activeTool === tool) {
+      clearBrowserTool();
+      return;
+    }
+    void pickBrowserElement(tool);
+  }
+
+  function updateActiveTargetStyle(prop: keyof PreviewAnnotationStyle, value: string) {
+    setActiveCommentTarget((current) => {
+      if (!current) return current;
+      const style = { ...(current.style ?? {}) };
+      if (prop === 'paddingTop') {
+        style.paddingTop = value;
+        style.paddingRight = value;
+        style.paddingBottom = value;
+        style.paddingLeft = value;
+      } else {
+        style[prop] = value;
+      }
+      return { ...current, style };
+    });
+  }
+
+  async function applyBrowserStyle(prop: keyof PreviewAnnotationStyle, value: string) {
+    const target = activeCommentTarget;
+    if (!target || !webviewNode) return;
+    updateActiveTargetStyle(prop, value);
+    const props: Array<keyof PreviewAnnotationStyle> = prop === 'paddingTop'
+      ? ['paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft']
+      : [prop];
+    try {
+      for (const item of props) {
+        await webviewNode.executeJavaScript(browserApplyStyleScript(target.selector, item, value), true);
+      }
+    } catch {
+      setStatusMessage('Could not apply style in browser page');
+    }
+  }
+
+  async function applyBrowserText(value: string) {
+    const target = activeCommentTarget;
+    setTextDraft(value);
+    setActiveCommentTarget((current) => current ? { ...current, text: value } : current);
+    if (!target || !webviewNode) return;
+    try {
+      await webviewNode.executeJavaScript(browserApplyTextScript(target.selector, value), true);
+    } catch {
+      setStatusMessage('Could not edit text in browser page');
+    }
+  }
+
+  async function saveBrowserDomEdit() {
+    if (!webviewNode) return;
+    const relativePath = projectRelativePathFromBrowserUrl(currentUrl, resolvedDir);
+    if (!relativePath) {
+      setStatusMessage('Only project-local HTML pages can be saved');
+      return;
+    }
+    setSavingDomEdit(true);
+    try {
+      const html = await webviewNode.executeJavaScript<string>(BROWSER_SERIALIZE_HTML_SCRIPT, true);
+      const file = await writeProjectTextFile(projectId, relativePath, html);
+      if (!file) throw new Error('HTML save failed');
+      await onRefreshFiles();
+      setStatusMessage('HTML changes saved');
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : 'HTML save failed');
+    } finally {
+      setSavingDomEdit(false);
+    }
+  }
+
+  function queueBrowserCommentDraft() {
+    const note = commentDraft.trim();
+    if (!note) return;
+    setQueuedCommentNotes((current) => [...current, note]);
+    setCommentDraft('');
+  }
+
+  function addBrowserImages(files: File[]) {
+    const images = files.filter((file) => file.type.startsWith('image/'));
+    if (images.length === 0) return;
+    setBrowserImages((current) => [...current, ...images]);
+  }
+
+  function removeBrowserImage(index: number) {
+    setBrowserImages((current) => current.filter((_, itemIndex) => itemIndex !== index));
+    setBrowserPreviewIndex((current) => {
+      if (current === null) return current;
+      if (current === index) return null;
+      return current > index ? current - 1 : current;
+    });
+  }
+
+  async function saveBrowserComment() {
+    if (!activeCommentTarget || !onSavePreviewComment) {
+      setStatusMessage('Comment saving is unavailable');
+      return;
+    }
+    const note = commentDraft.trim();
+    if (!note && browserImages.length === 0 && (activeSavedComment?.attachments?.length ?? 0) === 0) return;
+    setSendingComment(true);
+    try {
+      const saved = await onSavePreviewComment(browserTargetFromSnapshot(activeCommentTarget), note, false, browserImages);
+      if (saved) {
+        setActivePreviewCommentId(saved.id);
+        setCommentDraft(saved.note);
+        setQueuedCommentNotes([]);
+        setBrowserImages([]);
+        setBrowserPreviewIndex(null);
+        setStatusMessage('Browser comment saved');
+      }
+    } finally {
+      setSendingComment(false);
+    }
+  }
+
+  async function sendBrowserCommentBatch() {
+    if (!activeCommentTarget || !onSendBoardCommentAttachments) {
+      setStatusMessage('Comment sending is unavailable');
+      return;
+    }
+    const notes = [...queuedCommentNotes];
+    if (commentDraft.trim()) notes.push(commentDraft.trim());
+    if (notes.length === 0 && browserImages.length === 0 && activeSavedComment) {
+      setSendingComment(true);
+      try {
+        await onSendBoardCommentAttachments(commentsToAttachments([activeSavedComment]));
+        clearBrowserTool();
+      } finally {
+        setSendingComment(false);
+      }
+      return;
+    }
+    if (notes.length === 0 && browserImages.length === 0) return;
+    setSendingComment(true);
+    try {
+      const existingAttachments = activeSavedComment?.attachments ?? [];
+      const attachments = buildBoardCommentAttachments({
+        target: browserTargetFromSnapshot(activeCommentTarget),
+        notes,
+        includeImageOnly: browserImages.length > 0,
+        imageAttachmentCount: browserImages.length,
+      }).map((attachment) => (
+        existingAttachments.length > 0
+          ? { ...attachment, imageAttachments: existingAttachments }
+          : attachment
+      ));
+      const accepted = await onSendBoardCommentAttachments(
+        attachments,
+        browserImages,
+      );
+      if (accepted === false) return;
+      clearBrowserTool();
+    } finally {
+      setSendingComment(false);
+    }
+  }
+
+  const viewportPreset =
+    BROWSER_VIEWPORT_PRESETS.find((preset) => preset.id === viewport) ?? BROWSER_VIEWPORT_PRESETS[0]!;
+  const viewportStyle = viewportPreset.width
+    ? {
+        '--db-viewport-width': `${viewportPreset.width}px`,
+        '--db-viewport-height': `${viewportPreset.height}px`,
+      } as CSSProperties
+    : undefined;
+  const browserPopoverBounds = (() => {
+    const rect = webviewNode?.getBoundingClientRect();
+    if (!rect || rect.width <= 0 || rect.height <= 0) return undefined;
+    return { width: rect.width, height: rect.height };
+  })();
+  const activeBrowserPreviewImage =
+    browserPreviewIndex !== null ? browserImagePreviews[browserPreviewIndex] ?? null : null;
+  const browserPreviewImageModal = activeBrowserPreviewImage
+    ? createPortal(
+        <div
+          className="staged-preview-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-label={activeBrowserPreviewImage.file.name}
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setBrowserPreviewIndex(null);
+          }}
+        >
+          <div className="staged-preview-card">
+            <div className="staged-preview-head">
+              <span title={activeBrowserPreviewImage.file.name}>{activeBrowserPreviewImage.file.name}</span>
+              <button
+                type="button"
+                className="icon-only od-tooltip"
+                onClick={() => setBrowserPreviewIndex(null)}
+                aria-label={t('common.close')}
+                title={t('common.close')}
+                data-tooltip={t('common.close')}
+              >
+                <Icon name="close" size={14} />
+              </button>
+            </div>
+            <img src={activeBrowserPreviewImage.url} alt={activeBrowserPreviewImage.file.name} />
+          </div>
+        </div>,
+        document.body,
+      )
+    : null;
+  const commentComposer = activeTool === 'comment' && activeCommentTarget ? (
+    <BoardComposerPopover
+      target={activeCommentTarget}
+      existing={activeSavedComment}
+      draft={commentDraft}
+      notes={queuedCommentNotes}
+      onDraft={setCommentDraft}
+      onAddDraft={queueBrowserCommentDraft}
+      onRemoveQueuedNote={(index) => setQueuedCommentNotes((current) => current.filter((_, itemIndex) => itemIndex !== index))}
+      onClose={clearBrowserTool}
+      onSaveComment={() => saveBrowserComment()}
+      onSendBatch={() => sendBrowserCommentBatch()}
+      onRemoveMember={() => {}}
+      onDeleteComment={onRemovePreviewComment}
+      images={browserImagePreviews}
+      existingImages={(activeSavedComment?.attachments ?? []).map((attachment) => ({
+        url: projectRawUrl(projectId, attachment.path),
+        name: attachment.name,
+      }))}
+      onAttachImages={addBrowserImages}
+      onRemoveImage={removeBrowserImage}
+      onPreviewImage={setBrowserPreviewIndex}
+      sending={sendingComment}
+      sendDisabled={sendDisabled}
+      t={t}
+      scale={1}
+      bounds={browserPopoverBounds}
+      commenting
+    />
+  ) : null;
+
   return (
     <section className="design-browser" aria-label="Design Browser">
       <div className="db-chrome" ref={chromeRef}>
@@ -1019,6 +1408,11 @@ export function DesignBrowserPanel({
           >
             <Icon name="reload" size={15} />
           </IconTooltipButton>
+          <BrowserViewportControls
+            viewport={viewport}
+            onViewport={setViewport}
+            disabled={isBlank}
+          />
         </div>
         <form className="db-address-form" onSubmit={handleAddressSubmit}>
           <BrowserSiteIcon
@@ -1095,6 +1489,7 @@ export function DesignBrowserPanel({
           {desktopHostAvailable ? (
             <IconTooltipButton
               label={t('fileViewer.screenshot')}
+              wrapperClassName="db-action-item db-action-secondary db-action-screenshot"
               disabled={isBlank || savingAction != null}
               onClick={takeScreenshot}
             >
@@ -1104,15 +1499,47 @@ export function DesignBrowserPanel({
           {desktopHostAvailable ? (
             <IconTooltipButton
               label={t('fileViewer.mark')}
+              wrapperClassName="db-action-item db-action-mark"
               disabled={isBlank}
               className={drawOverlayOpen ? 'is-active' : ''}
-              onClick={() => setDrawOverlayOpen((open) => !open)}
+              onClick={() => {
+                clearBrowserTool();
+                setDrawOverlayOpen((open) => !open);
+              }}
             >
               <RemixIcon name="mark-pen-line" size={15} />
             </IconTooltipButton>
           ) : null}
           <IconTooltipButton
+            label={t('fileViewer.comment')}
+            wrapperClassName="db-action-item db-action-primary db-action-comment"
+            disabled={isBlank || !desktopHostAvailable}
+            className={activeTool === 'comment' ? 'is-active' : ''}
+            onClick={() => toggleBrowserTool('comment')}
+          >
+            <Icon name="comment" size={15} />
+          </IconTooltipButton>
+          <IconTooltipButton
+            label="Tune element"
+            wrapperClassName="db-action-item db-action-primary db-action-tune"
+            disabled={isBlank || !desktopHostAvailable}
+            className={activeTool === 'inspect' ? 'is-active' : ''}
+            onClick={() => toggleBrowserTool('inspect')}
+          >
+            <RemixIcon name="contrast-drop-line" size={15} />
+          </IconTooltipButton>
+          <IconTooltipButton
+            label={editableProjectHtml ? 'Edit HTML' : 'Edit live DOM'}
+            wrapperClassName="db-action-item db-action-primary db-action-edit"
+            disabled={isBlank || !desktopHostAvailable}
+            className={activeTool === 'edit' ? 'is-active' : ''}
+            onClick={() => toggleBrowserTool('edit')}
+          >
+            <Icon name="edit" size={15} />
+          </IconTooltipButton>
+          <IconTooltipButton
             label="Save page brief"
+            wrapperClassName="db-action-item db-action-secondary db-action-save"
             disabled={isBlank || savingAction != null}
             onClick={savePageBrief}
           >
@@ -1120,12 +1547,65 @@ export function DesignBrowserPanel({
           </IconTooltipButton>
           <IconTooltipButton
             label="Browser menu"
+            wrapperClassName="db-action-item db-action-menu"
             onClick={() => setMenuOpen((open) => !open)}
           >
             <Icon name="more-horizontal" size={16} />
           </IconTooltipButton>
           {menuOpen ? (
             <div className="db-menu" role="menu">
+              {desktopHostAvailable ? (
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    clearBrowserTool();
+                    setDrawOverlayOpen((open) => !open);
+                  }}
+                  disabled={isBlank}
+                >
+                  <RemixIcon name="mark-pen-line" size={14} />
+                  {t('fileViewer.mark')}
+                </button>
+              ) : null}
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setMenuOpen(false);
+                  toggleBrowserTool('comment');
+                }}
+                disabled={isBlank || !desktopHostAvailable}
+              >
+                <Icon name="comment" size={14} />
+                {t('fileViewer.comment')}
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setMenuOpen(false);
+                  toggleBrowserTool('inspect');
+                }}
+                disabled={isBlank || !desktopHostAvailable}
+              >
+                <RemixIcon name="contrast-drop-line" size={14} />
+                Tune Element
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setMenuOpen(false);
+                  toggleBrowserTool('edit');
+                }}
+                disabled={isBlank || !desktopHostAvailable}
+              >
+                <Icon name="edit" size={14} />
+                {editableProjectHtml ? 'Edit HTML' : 'Edit Live DOM'}
+              </button>
+              <span className="db-menu-separator" />
               <button type="button" role="menuitem" onClick={takeScreenshot} disabled={isBlank || savingAction != null}>
                 <Icon name="image" size={14} />
                 Copy Screenshot
@@ -1164,9 +1644,11 @@ export function DesignBrowserPanel({
         </div>
       </div>
       {statusMessage ? <div className="db-status">{statusMessage}</div> : null}
-      <div className="db-content">
+      {browserPreviewImageModal}
+      <div className={`db-content db-content-viewport-${isBlank ? 'desktop' : viewport}`}>
         <PreviewDrawOverlay
           active={drawOverlayOpen}
+          captureTarget={activeCommentTarget ? browserTargetFromSnapshot(activeCommentTarget) : null}
           captureViewport={!isBlank}
           captureSnapshot={desktopHostAvailable ? captureBrowserSnapshot : undefined}
           captureFrameRect={() => webviewNode?.getBoundingClientRect() ?? null}
@@ -1176,23 +1658,63 @@ export function DesignBrowserPanel({
           sendDisabled={sendDisabled}
           sendDisabledReason={t('chat.annotationSendDisabledReason')}
         >
-          {isBlank ? (
-            <DesignBrowserStart
-              onNavigate={navigateTo}
-            />
-          ) : desktopHostAvailable ? (
-            <webview
-              ref={assignWebviewNode}
-              className="db-webview"
-              src={loadUrl}
-              partition={DESIGN_BROWSER_PARTITION}
-              title={pageTitle}
-            />
-          ) : (
-            <div className="db-fallback">
-              <iframe title={pageTitle} src={loadUrl} />
+          <div
+            className={`db-viewport-frame db-viewport-${isBlank ? 'desktop' : viewport}`}
+            style={isBlank ? undefined : viewportStyle}
+          >
+            {isBlank ? (
+              <DesignBrowserStart
+                onNavigate={navigateTo}
+              />
+            ) : desktopHostAvailable ? (
+              <webview
+                ref={assignWebviewNode}
+                className="db-webview"
+                src={loadUrl}
+                partition={DESIGN_BROWSER_PARTITION}
+                title={pageTitle}
+              />
+            ) : (
+              <div className="db-fallback">
+                <iframe title={pageTitle} src={loadUrl} />
+              </div>
+            )}
+            {!isBlank ? (
+              <BrowserCommentMarkers
+                comments={visibleComments}
+                activeCommentId={activePreviewCommentId}
+                onOpen={(comment) => {
+                  const snapshot = browserSnapshotFromComment(comment, browserFilePath);
+                  setActiveTool('comment');
+                  setActiveCommentTarget(snapshot);
+                  setActivePreviewCommentId(comment.id);
+                  setCommentDraft(comment.note);
+                  setQueuedCommentNotes([]);
+                  setTextDraft(snapshot.text);
+                  setDrawOverlayOpen(false);
+                }}
+              />
+            ) : null}
+            {commentComposer}
+            {(activeTool === 'inspect' || activeTool === 'edit') && activeCommentTarget ? (
+              <BrowserInspectPanel
+                mode={activeTool}
+                target={activeCommentTarget}
+                textDraft={textDraft}
+                canSave={editableProjectHtml}
+                saving={savingDomEdit}
+                onApplyStyle={(prop, value) => { void applyBrowserStyle(prop, value); }}
+                onTextDraft={(value) => { void applyBrowserText(value); }}
+                onSave={() => { void saveBrowserDomEdit(); }}
+                onClose={clearBrowserTool}
+              />
+            ) : null}
+          </div>
+          {!isBlank && activeTool && !activeCommentTarget ? (
+            <div className="db-tool-hint" role="status">
+              {activeTool === 'comment' ? 'Click an element to comment' : 'Click an element to tune'}
             </div>
-          )}
+          ) : null}
         </PreviewDrawOverlay>
       </div>
     </section>
@@ -1202,14 +1724,20 @@ export function DesignBrowserPanel({
 function IconTooltipButton({
   label,
   className,
+  wrapperClassName,
   children,
   ...buttonProps
 }: {
   label: string;
   children: ReactNode;
+  wrapperClassName?: string;
 } & ButtonHTMLAttributes<HTMLButtonElement>) {
   return (
-    <span className="db-tooltip-anchor od-tooltip" data-tooltip={label} data-tooltip-placement="bottom">
+    <span
+      className={['db-tooltip-anchor od-tooltip', wrapperClassName].filter(Boolean).join(' ')}
+      data-tooltip={label}
+      data-tooltip-placement="bottom"
+    >
       <button
         {...buttonProps}
         type="button"
@@ -1221,6 +1749,456 @@ function IconTooltipButton({
       </button>
     </span>
   );
+}
+
+function BrowserViewportControls({
+  disabled,
+  onViewport,
+  viewport,
+}: {
+  disabled?: boolean;
+  onViewport: (viewport: BrowserViewportId) => void;
+  viewport: BrowserViewportId;
+}) {
+  const [open, setOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const activePreset =
+    BROWSER_VIEWPORT_PRESETS.find((preset) => preset.id === viewport) ?? BROWSER_VIEWPORT_PRESETS[0]!;
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!menuRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [open]);
+
+  return (
+    <div className="db-viewport-switcher" ref={menuRef}>
+      <IconTooltipButton
+        label={activePreset.title}
+        disabled={disabled}
+        className={open ? 'is-active' : ''}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <span className="db-viewport-label">{activePreset.label}</span>
+        <RemixIcon name="arrow-down-s-line" size={13} />
+      </IconTooltipButton>
+      {open ? (
+        <div className="db-viewport-menu" role="listbox" aria-label="Browser viewport">
+          {BROWSER_VIEWPORT_PRESETS.map((preset) => (
+            <button
+              key={preset.id}
+              type="button"
+              role="option"
+              aria-selected={preset.id === viewport}
+              className={preset.id === viewport ? 'active' : ''}
+              onClick={() => {
+                onViewport(preset.id);
+                setOpen(false);
+              }}
+            >
+              <span>{preset.label}</span>
+              {preset.id === viewport ? <Icon name="check" size={13} /> : null}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function BrowserCommentMarkers({
+  activeCommentId,
+  comments,
+  onOpen,
+}: {
+  activeCommentId: string | null;
+  comments: PreviewComment[];
+  onOpen: (comment: PreviewComment) => void;
+}) {
+  if (comments.length === 0) return null;
+  return (
+    <div className="db-comment-layer" aria-label="Browser comments">
+      {comments.map((comment, index) => {
+        const snapshot = browserSnapshotFromComment(comment, comment.filePath);
+        const bounds = browserOverlayBounds(snapshot);
+        const active = comment.id === activeCommentId;
+        const label = comment.label || comment.elementId || 'Browser comment';
+        return (
+          <button
+            key={comment.id}
+            type="button"
+            className={`db-comment-marker${active ? ' active' : ''}`}
+            style={{
+              left: bounds.left,
+              top: bounds.top,
+              width: bounds.width,
+              height: bounds.height,
+            }}
+            title={`${index + 1}. ${label}: ${comment.note}`}
+            aria-label={`Open browser comment for ${label}`}
+            onClick={() => onOpen(comment)}
+          >
+            <span>{index + 1}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function BrowserCommentComposer({
+  draft,
+  existing,
+  notes,
+  onAddDraft,
+  onClose,
+  onDeleteComment,
+  onDraft,
+  onRemoveQueuedNote,
+  onSaveComment,
+  onSendBatch,
+  sendDisabled,
+  sending,
+  target,
+}: {
+  draft: string;
+  existing: PreviewComment | null;
+  notes: string[];
+  onAddDraft: () => void;
+  onClose: () => void;
+  onDeleteComment?: (commentId: string) => Promise<void> | void;
+  onDraft: (value: string) => void;
+  onRemoveQueuedNote: (index: number) => void;
+  onSaveComment: () => void;
+  onSendBatch: () => void;
+  sendDisabled: boolean;
+  sending: boolean;
+  target: BrowserElementSnapshot;
+}) {
+  return (
+    <div className="comment-popover db-comment-popover" role="dialog" aria-label="Browser comment">
+      <div className="comment-popover-head">
+        <div>
+          <strong title={target.label}>{target.label || 'Browser element'}</strong>
+          <span title={target.selector}>{target.selector}</span>
+        </div>
+        <button type="button" className="ghost" onClick={onClose} aria-label="Close browser comment">
+          <Icon name="close" size={12} />
+        </button>
+      </div>
+      {notes.length > 0 ? (
+        <div className="board-note-list">
+          {notes.map((note, index) => (
+            <div key={`${note}:${index}`} className="board-note-item">
+              <span>{note}</span>
+              <button type="button" className="ghost" onClick={() => onRemoveQueuedNote(index)}>
+                Remove
+              </button>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      <textarea
+        aria-label="Browser comment note"
+        value={draft}
+        onChange={(event) => onDraft(event.target.value)}
+        placeholder="Describe the change or issue..."
+      />
+      <div className="comment-popover-actions">
+        <div className="comment-popover-actions-start">
+          {existing && onDeleteComment ? (
+            <button type="button" className="ghost comment-popover-delete" disabled={sending} onClick={() => void onDeleteComment(existing.id)}>
+              Delete
+            </button>
+          ) : null}
+          <button type="button" className="ghost" disabled={sending || !draft.trim()} onClick={onAddDraft}>
+            Add note
+          </button>
+        </div>
+        <div className="comment-popover-actions-end">
+          <button type="button" className="ghost" disabled={sending || (!draft.trim() && !existing)} onClick={onSaveComment}>
+            Save comment
+          </button>
+          <button type="button" className="primary" disabled={sending || sendDisabled || (!draft.trim() && notes.length === 0 && !existing)} onClick={onSendBatch}>
+            {sending ? 'Sending...' : 'Send to chat'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function BrowserInspectPanel({
+  canSave,
+  mode,
+  onApplyStyle,
+  onClose,
+  onSave,
+  onTextDraft,
+  saving,
+  target,
+  textDraft,
+}: {
+  canSave: boolean;
+  mode: 'inspect' | 'edit';
+  onApplyStyle: (prop: keyof PreviewAnnotationStyle, value: string) => void;
+  onClose: () => void;
+  onSave: () => void;
+  onTextDraft: (value: string) => void;
+  saving: boolean;
+  target: BrowserElementSnapshot;
+  textDraft: string;
+}) {
+  const draft = browserStyleDraftFromTarget(target);
+  const fontSize = parsePx(draft.fontSize, 16);
+  const padding = parsePx(draft.paddingTop, 0);
+  const radius = parsePx(draft.borderRadius, 0);
+
+  return (
+    <aside className="inspect-panel db-inspect-panel" data-testid="browser-inspect-panel">
+      <header className="inspect-panel-head">
+        <div className="inspect-panel-title">
+          <strong title={target.label}>{mode === 'edit' ? 'Edit HTML element' : 'Tune browser element'}</strong>
+          <code title={target.selector}>{target.label || target.selector}</code>
+        </div>
+        <button type="button" className="ghost" onClick={onClose} aria-label="Close browser tune">
+          <Icon name="close" size={12} />
+        </button>
+      </header>
+
+      <section className="inspect-section">
+        <div className="inspect-section-label">Colors</div>
+        <div className="inspect-row">
+          <label htmlFor="db-inspect-color">Text</label>
+          <input
+            id="db-inspect-color"
+            type="color"
+            value={cssColorToHex(draft.color, '#1f1f1f')}
+            onChange={(event) => onApplyStyle('color', event.target.value)}
+          />
+          <span className="inspect-row-value">{cssColorToHex(draft.color, '#1f1f1f')}</span>
+        </div>
+        <div className="inspect-row">
+          <label htmlFor="db-inspect-bg">Fill</label>
+          <input
+            id="db-inspect-bg"
+            type="color"
+            value={cssColorToHex(draft.backgroundColor, '#ffffff')}
+            onChange={(event) => onApplyStyle('backgroundColor', event.target.value)}
+          />
+          <span className="inspect-row-value">{cssColorToHex(draft.backgroundColor, '#ffffff')}</span>
+        </div>
+      </section>
+
+      <section className="inspect-section">
+        <div className="inspect-section-label">Type</div>
+        <div className="inspect-row">
+          <label htmlFor="db-inspect-font-size">Size</label>
+          <input
+            id="db-inspect-font-size"
+            type="range"
+            min={8}
+            max={96}
+            value={fontSize}
+            onChange={(event) => onApplyStyle('fontSize', `${event.target.value}px`)}
+          />
+          <span className="inspect-row-value">{fontSize}px</span>
+        </div>
+        <div className="inspect-row">
+          <label htmlFor="db-inspect-weight">Weight</label>
+          <select
+            id="db-inspect-weight"
+            value={draft.fontWeight}
+            onChange={(event) => onApplyStyle('fontWeight', event.target.value)}
+          >
+            <option value="300">300</option>
+            <option value="400">400</option>
+            <option value="500">500</option>
+            <option value="600">600</option>
+            <option value="700">700</option>
+            <option value="800">800</option>
+          </select>
+          <span className="inspect-row-value">{draft.fontWeight}</span>
+        </div>
+      </section>
+
+      <section className="inspect-section">
+        <div className="inspect-section-label">Spacing</div>
+        <div className="inspect-row">
+          <label htmlFor="db-inspect-padding">Pad</label>
+          <input
+            id="db-inspect-padding"
+            type="range"
+            min={0}
+            max={80}
+            value={padding}
+            onChange={(event) => onApplyStyle('paddingTop', `${event.target.value}px`)}
+          />
+          <span className="inspect-row-value">{padding}px</span>
+        </div>
+        <div className="inspect-row">
+          <label htmlFor="db-inspect-radius">Radius</label>
+          <input
+            id="db-inspect-radius"
+            type="range"
+            min={0}
+            max={80}
+            value={radius}
+            onChange={(event) => onApplyStyle('borderRadius', `${event.target.value}px`)}
+          />
+          <span className="inspect-row-value">{radius}px</span>
+        </div>
+      </section>
+
+      {mode === 'edit' ? (
+        <section className="inspect-section">
+          <div className="inspect-section-label">Content</div>
+          <textarea
+            aria-label="Element text"
+            className="db-inspect-text"
+            value={textDraft}
+            onChange={(event) => onTextDraft(event.target.value)}
+          />
+        </section>
+      ) : null}
+
+      <footer className="inspect-panel-footer">
+        <button type="button" className="ghost" onClick={onClose}>Close</button>
+        <button type="button" className="primary" disabled={!canSave || saving} onClick={onSave}>
+          {saving ? 'Saving...' : canSave ? 'Save HTML' : 'Live only'}
+        </button>
+      </footer>
+    </aside>
+  );
+}
+
+function browserSnapshotFromComment(comment: PreviewComment, filePath: string): BrowserElementSnapshot {
+  return {
+    filePath,
+    elementId: comment.elementId,
+    selector: comment.selector,
+    label: comment.label,
+    text: comment.text,
+    position: comment.position,
+    htmlHint: comment.htmlHint,
+    style: comment.style,
+    selectionKind: 'element',
+  };
+}
+
+function browserTargetFromSnapshot(snapshot: BrowserElementSnapshot): PreviewCommentTarget {
+  return {
+    filePath: snapshot.filePath,
+    elementId: snapshot.elementId,
+    selector: snapshot.selector,
+    label: snapshot.label,
+    text: snapshot.text.trim().slice(0, 500),
+    position: snapshot.position,
+    htmlHint: snapshot.htmlHint.trim().slice(0, 500),
+    style: snapshot.style,
+    selectionKind: 'element',
+  };
+}
+
+function browserOverlayBounds(snapshot: BrowserElementSnapshot) {
+  const position = snapshot.position;
+  return {
+    left: Math.round(position.x),
+    top: Math.round(position.y),
+    width: Math.max(1, Math.round(position.width)),
+    height: Math.max(1, Math.round(position.height)),
+  };
+}
+
+function browserCommentsToAttachments(comments: PreviewComment[]): ChatCommentAttachment[] {
+  return comments.map((comment, index) => ({
+    id: comment.id,
+    order: index + 1,
+    filePath: comment.filePath,
+    elementId: comment.elementId,
+    selector: comment.selector,
+    label: comment.label,
+    comment: comment.note.trim() || 'Saved browser comment',
+    currentText: comment.text.trim().slice(0, 500),
+    pagePosition: comment.position,
+    htmlHint: comment.htmlHint.trim().slice(0, 500),
+    style: comment.style,
+    selectionKind: 'element',
+    imageAttachments: comment.attachments && comment.attachments.length > 0
+      ? comment.attachments
+      : undefined,
+    source: 'saved-comment',
+  }));
+}
+
+function browserBoardCommentAttachments(input: {
+  notes: string[];
+  target: PreviewCommentTarget;
+}): ChatCommentAttachment[] {
+  return input.notes
+    .map((note) => note.trim())
+    .filter(Boolean)
+    .map((note, index) => ({
+      id: `${input.target.elementId}-browser-${index + 1}`,
+      order: index + 1,
+      filePath: input.target.filePath,
+      elementId: input.target.elementId,
+      selector: input.target.selector,
+      label: input.target.label,
+      comment: note,
+      currentText: input.target.text.trim().slice(0, 500),
+      pagePosition: input.target.position,
+      htmlHint: input.target.htmlHint.trim().slice(0, 500),
+      style: input.target.style,
+      selectionKind: 'element',
+      source: 'board-batch',
+    }));
+}
+
+function browserStyleDraftFromTarget(target: BrowserElementSnapshot): BrowserStyleDraft {
+  const style = target.style ?? {};
+  return {
+    backgroundColor: style.backgroundColor || '#ffffff',
+    borderRadius: style.borderRadius || '0px',
+    color: style.color || '#1f1f1f',
+    fontSize: style.fontSize || '16px',
+    fontWeight: style.fontWeight || '400',
+    lineHeight: style.lineHeight || 'normal',
+    paddingTop: style.paddingTop || style.paddingRight || style.paddingBottom || style.paddingLeft || '0px',
+    textAlign: style.textAlign || 'start',
+  };
+}
+
+function parsePx(value: string, fallback: number): number {
+  const match = /^(-?\d+(?:\.\d+)?)px$/i.exec(value.trim());
+  if (!match) return fallback;
+  const next = Math.round(Number(match[1]));
+  return Number.isFinite(next) ? next : fallback;
+}
+
+function cssColorToHex(value: string, fallback: string): string {
+  const raw = value.trim();
+  if (/^#[0-9a-f]{6}$/i.test(raw)) return raw;
+  if (/^#[0-9a-f]{3}$/i.test(raw)) {
+    return `#${raw.slice(1).split('').map((char) => char + char).join('')}`;
+  }
+  const match = raw.match(/rgba?\(\s*([0-9.]+)[ ,]+([0-9.]+)[ ,]+([0-9.]+)/i);
+  if (!match) return fallback;
+  const toHex = (part: string | undefined) => {
+    const number = Math.max(0, Math.min(255, Math.round(Number(part ?? 0))));
+    return number.toString(16).padStart(2, '0');
+  };
+  return `#${toHex(match[1])}${toHex(match[2])}${toHex(match[3])}`;
 }
 
 const REFERENCE_ALL_CATEGORY = 'all';

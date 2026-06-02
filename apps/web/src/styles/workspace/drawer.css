@@ -1630,9 +1630,13 @@
 
 .ws-browser-panel {
   display: none;
+  position: absolute;
+  inset: 0;
   flex: 1 1 auto;
   min-height: 0;
   width: 100%;
+  height: 100%;
+  overflow: hidden;
 }
 .ws-browser-panel.active {
   display: flex;

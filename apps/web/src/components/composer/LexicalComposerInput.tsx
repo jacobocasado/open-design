@@ -262,12 +262,6 @@ function mentionAfterCaret(selection: RangeSelection): MentionNode | null {
 }
 
 function selectBeforeMention(node: MentionNode): void {
-  const previous = node.getPreviousSibling();
-  if ($isTextNode(previous) && !$isMentionNode(previous)) {
-    const offset = previous.getTextContentSize();
-    previous.select(offset, offset);
-    return;
-  }
   const parent = node.getParent();
   if (parent) {
     const index = node.getIndexWithinParent();
@@ -276,11 +270,6 @@ function selectBeforeMention(node: MentionNode): void {
 }
 
 function selectAfterMention(node: MentionNode): void {
-  const next = node.getNextSibling();
-  if ($isTextNode(next) && !$isMentionNode(next)) {
-    next.select(0, 0);
-    return;
-  }
   const parent = node.getParent();
   if (parent) {
     const index = node.getIndexWithinParent() + 1;

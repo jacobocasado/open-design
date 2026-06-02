@@ -126,6 +126,7 @@ function migrate(db: SqliteDb): void {
       member_count INTEGER,
       pod_members_json TEXT,
       style_json TEXT,
+      attachments_json TEXT,
       slide_index INTEGER,
       slide_key INTEGER NOT NULL DEFAULT -1,
       note TEXT NOT NULL,
@@ -359,6 +360,7 @@ function migratePreviewCommentsSlideKey(db: SqliteDb): void {
       member_count INTEGER,
       pod_members_json TEXT,
       style_json TEXT,
+      attachments_json TEXT,
       slide_index INTEGER,
       slide_key INTEGER NOT NULL DEFAULT -1,
       note TEXT NOT NULL,
@@ -373,10 +375,10 @@ function migratePreviewCommentsSlideKey(db: SqliteDb): void {
     INSERT INTO preview_comments_next
       (id, project_id, conversation_id, file_path, element_id, selector, label,
        text, position_json, html_hint, selection_kind, member_count, pod_members_json,
-       style_json, slide_index, slide_key, note, status, created_at, updated_at)
+       style_json, attachments_json, slide_index, slide_key, note, status, created_at, updated_at)
     SELECT id, project_id, conversation_id, file_path, element_id, selector, label,
        text, position_json, html_hint, selection_kind, member_count, pod_members_json,
-       style_json, slide_index, COALESCE(slide_index, -1), note, status, created_at, updated_at
+       style_json, attachments_json, slide_index, COALESCE(slide_index, -1), note, status, created_at, updated_at
       FROM preview_comments;
 
     DROP TABLE preview_comments;

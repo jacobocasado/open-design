@@ -1622,7 +1622,7 @@ function meaningfulDomFallbackTarget(el) {
   // attribute edits, but schedulePostActiveCommentTarget re-posts exactly ONE
   // element (the active comment), so it stays cheap even on animated artifacts —
   // unlike the full allTargets() re-walk above. This is why attributes/
-  // characterData live on this targeted observer instead of `mo`.
+  // characterData live on this targeted observer instead of the main observer.
   var textMo = new MutationObserver(schedulePostActiveCommentTarget);
   textMo.observe(document.documentElement, { subtree: true, characterData: true, attributes: true });
   // Reflect the host-requested initial modes on the documentElement so
