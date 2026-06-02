@@ -383,6 +383,88 @@ describe('langfuse-bridge.reportRunCompletedFromDaemon', () => {
     expect(generation.model).toBe('claude-opus-4-1');
   });
 
+  it('forwards token usage for a totalTokens-only usage event', async () => {
+    await writeAppCfg({
+      installationId: 'install-uuid-3',
+      telemetry: { metrics: true, content: true, artifactManifest: false },
+    });
+    const fetchSpy = vi
+      .fn()
+      .mockResolvedValue(new Response('{}', { status: 207 }));
+    process.env.LANGFUSE_PUBLIC_KEY = 'pk';
+    process.env.LANGFUSE_SECRET_KEY = 'sk';
+    try {
+      const run = makeRun() as any;
+      // A provider that only reports an aggregate total — no input/output
+      // breakdown. scanRunEventsForUsageAnalytics still surfaces total_tokens,
+      // and the bridge must carry it through to Langfuse so the per-trace UI
+      // does not lose token visibility and stays consistent with PostHog.
+      run.events = [
+        {
+          id: 1,
+          event: 'agent',
+          timestamp: run.createdAt + 1000,
+          data: { type: 'usage', usage: { total_tokens: 512 } },
+        },
+      ];
+      await reportRunCompletedFromDaemon({
+        db: makeDbWithListMessages({ 'conv-1': [] }),
+        dataDir,
+        run,
+        fetchImpl: fetchSpy as any,
+      });
+    } finally {
+      delete process.env.LANGFUSE_PUBLIC_KEY;
+      delete process.env.LANGFUSE_SECRET_KEY;
+    }
+    const init = fetchSpy.mock.calls[0]![1] as RequestInit;
+    const batch = JSON.parse(init.body as string).batch as any[];
+    const trace = batch[0].body;
+    const generation = bodyOf(batch, 'generation-create', 'llm');
+    // total_tokens must reach the trace metadata even with no input/output.
+    expect(trace.metadata.tokens).toBeTruthy();
+    expect(trace.metadata.tokens.total).toBe(512);
+    expect(trace.metadata.tokens.input).toBeUndefined();
+    expect(trace.metadata.tokens.output).toBeUndefined();
+    // …and onto the Langfuse generation usage so cost/token views populate.
+    expect(generation.usage.total).toBe(512);
+  });
+
+  it('leaves model unknown for a default-model run with no status/model event', async () => {
+    await writeAppCfg({
+      installationId: 'install-uuid-4',
+      telemetry: { metrics: true, content: true, artifactManifest: false },
+    });
+    const fetchSpy = vi
+      .fn()
+      .mockResolvedValue(new Response('{}', { status: 207 }));
+    process.env.LANGFUSE_PUBLIC_KEY = 'pk';
+    process.env.LANGFUSE_SECRET_KEY = 'sk';
+    try {
+      // Request never pinned a concrete model (the `default` placeholder) and
+      // the agent never reported one, so the resolved model is genuinely
+      // unknown. Forwarding `default` would manufacture a fake model bucket.
+      await reportRunCompletedFromDaemon({
+        db: makeDbWithListMessages({ 'conv-1': [] }),
+        dataDir,
+        run: makeRun({ model: 'default' }) as any,
+        fetchImpl: fetchSpy as any,
+      });
+    } finally {
+      delete process.env.LANGFUSE_PUBLIC_KEY;
+      delete process.env.LANGFUSE_SECRET_KEY;
+    }
+    const init = fetchSpy.mock.calls[0]![1] as RequestInit;
+    const batch = JSON.parse(init.body as string).batch as any[];
+    const trace = batch[0].body;
+    const generation = bodyOf(batch, 'generation-create', 'llm');
+    expect(trace.metadata.model).toBeUndefined();
+    expect((trace.tags as string[]).some((t) => t.startsWith('model:'))).toBe(
+      false,
+    );
+    expect(generation.model).toBeUndefined();
+  });
+
   it('omits artifacts when that gate is off', async () => {
     await writeAppCfg({
       installationId: 'install-1',

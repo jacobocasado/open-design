@@ -116,9 +116,13 @@ function turnInfoFromRun(
     turn.model = run.model;
   } else if (agentReportedModel && agentReportedModel.trim().length > 0) {
     turn.model = agentReportedModel.trim();
-  } else if (run.model) {
-    turn.model = run.model;
   }
+  // No fallback to a non-explicit `run.model` here. When the request never
+  // pinned a concrete model and the agent never reported one, forwarding the
+  // request-side `default` placeholder would label the generation
+  // `model: "default"` — and Langfuse treats `generation.model` as a
+  // first-class grouping/cost dimension, so that creates a fake model bucket
+  // instead of leaving the model unknown.
   if (run.reasoning) turn.reasoning = run.reasoning;
   if (run.skillId) turn.skillId = run.skillId;
   if (run.designSystemId) turn.designSystemId = run.designSystemId;
@@ -147,7 +151,22 @@ function summarizeEvents(
 function messageUsageFromAnalytics(
   usage: RunUsageAnalytics,
 ): MessageSummary['usage'] | undefined {
-  if (usage.input_tokens === undefined && usage.output_tokens === undefined) {
+  // Gate on *any* token field being present, not just input/output. Providers
+  // that only report a total (or only cache counts) still produce a usage
+  // payload from `scanRunEventsForUsageAnalytics`; dropping it here would lose
+  // token visibility in the per-trace Langfuse UI and drift from the
+  // `run_finished` numbers PostHog already ships for the same run.
+  const hasAnyTokenField =
+    usage.input_tokens !== undefined ||
+    usage.input_tokens_provider !== undefined ||
+    usage.input_tokens_effective !== undefined ||
+    usage.output_tokens !== undefined ||
+    usage.total_tokens !== undefined ||
+    usage.cache_read_input_tokens !== undefined ||
+    usage.cache_creation_input_tokens !== undefined ||
+    usage.uncached_input_tokens !== undefined ||
+    usage.estimated_context_tokens !== undefined;
+  if (!hasAnyTokenField) {
     return undefined;
   }
   const out: NonNullable<MessageSummary['usage']> = {};
