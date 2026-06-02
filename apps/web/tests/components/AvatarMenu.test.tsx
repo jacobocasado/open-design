@@ -9,6 +9,7 @@ afterEach(() => {
 
 import { AvatarMenu } from '../../src/components/AvatarMenu';
 import { I18nProvider } from '../../src/i18n';
+import { AMR_CONSOLE_URL } from '../../src/runtime/amr-guidance';
 import type { AgentInfo, AppConfig, ProviderModelOption } from '../../src/types';
 
 const agents: AgentInfo[] = [
@@ -31,6 +32,15 @@ const agents: AgentInfo[] = [
     ],
   },
 ];
+
+const amrAgent: AgentInfo = {
+  id: 'amr',
+  name: 'AMR',
+  bin: 'vela',
+  available: true,
+  version: '0.0.4',
+  models: [{ id: 'glm-5.1', label: 'glm-5.1' }],
+};
 
 const daemonConfig: AppConfig = {
   mode: 'daemon',
@@ -71,6 +81,84 @@ const byokModelsCache: Record<string, ProviderModelOption[]> = {
 };
 
 describe('AvatarMenu', () => {
+
+  it('shows an AMR account shortcut when AMR is the active Local CLI agent', () => {
+    render(
+      <I18nProvider>
+        <AvatarMenu
+          config={{ ...daemonConfig, agentId: 'amr', agentModels: { amr: { model: 'glm-5.1' } } }}
+          agents={[...agents, amrAgent]}
+          daemonLive
+          onModeChange={vi.fn()}
+          onAgentChange={vi.fn()}
+          onAgentModelChange={vi.fn()}
+          onApiModelChange={vi.fn()}
+          onOpenSettings={vi.fn()}
+          providerModelsCache={{}}
+          onRefreshAgents={vi.fn()}
+        />
+      </I18nProvider>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Account & settings' }));
+    const link = screen.getByRole('link', { name: /AMR account/i });
+
+    expect(link.getAttribute('href')).toBe(AMR_CONSOLE_URL);
+    expect(link.getAttribute('target')).toBe('_blank');
+    expect(link.getAttribute('rel')).toBe('noopener noreferrer');
+    expect(screen.getByText('Balance & recharge')).toBeTruthy();
+    expect(screen.getAllByText('Balance & recharge')).toHaveLength(1);
+
+    fireEvent.click(link);
+
+    expect(screen.queryByRole('dialog', { name: 'Account & settings' })).toBeNull();
+  });
+
+  it('does not show the AMR account shortcut when another Local CLI agent is active', () => {
+    render(
+      <I18nProvider>
+        <AvatarMenu
+          config={daemonConfig}
+          agents={[...agents, amrAgent]}
+          daemonLive
+          onModeChange={vi.fn()}
+          onAgentChange={vi.fn()}
+          onAgentModelChange={vi.fn()}
+          onApiModelChange={vi.fn()}
+          onOpenSettings={vi.fn()}
+          providerModelsCache={{}}
+          onRefreshAgents={vi.fn()}
+        />
+      </I18nProvider>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Account & settings' }));
+
+    expect(screen.queryByRole('link', { name: /AMR account/i })).toBeNull();
+  });
+
+  it('does not show an AMR console link when AMR is unavailable', () => {
+    render(
+      <I18nProvider>
+        <AvatarMenu
+          config={daemonConfig}
+          agents={agents}
+          daemonLive
+          onModeChange={vi.fn()}
+          onAgentChange={vi.fn()}
+          onAgentModelChange={vi.fn()}
+          onApiModelChange={vi.fn()}
+          onOpenSettings={vi.fn()}
+          providerModelsCache={{}}
+          onRefreshAgents={vi.fn()}
+        />
+      </I18nProvider>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Account & settings' }));
+
+    expect(screen.queryByRole('link', { name: /AMR account/i })).toBeNull();
+  });
 
   it('fetches BYOK models on demand in project detail when no shared catalog is present', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {

@@ -15,6 +15,7 @@ import {
   amrLoginStatusEventReason,
   notifyAmrLoginStatusChanged,
 } from './amrLoginPolling';
+import { AMR_CONSOLE_URL } from '../runtime/amr-guidance';
 
 interface AmrLoginPillProps {
   className?: string;
@@ -24,6 +25,7 @@ interface AmrLoginPillProps {
   skipInitialRefresh?: boolean;
   signInLabel?: string;
   revealPendingCancelAction?: boolean;
+  showConsoleAction?: boolean;
   onStatusChange?: (status: VelaLoginStatus | null) => void;
 }
 
@@ -46,6 +48,8 @@ export interface AmrAccountControlProps {
   hideSignedOutStatus?: boolean;
   hideSignedInStatus?: boolean;
   signInLabel?: string;
+  showConsoleAction?: boolean;
+  consoleUrl?: string;
   showCancelSignInAction?: boolean;
   onSignIn?: (event: MouseEvent<HTMLButtonElement>) => void;
   onSignOut?: (event: MouseEvent<HTMLButtonElement>) => void;
@@ -89,6 +93,8 @@ export function AmrAccountControl({
   hideSignedOutStatus = false,
   hideSignedInStatus = false,
   signInLabel,
+  showConsoleAction = false,
+  consoleUrl = AMR_CONSOLE_URL,
   showCancelSignInAction = false,
   onSignIn,
   onSignOut,
@@ -129,6 +135,17 @@ export function AmrAccountControl({
     >
       {statusText ? (
         <span className="amr-account-control__status">{statusText}</span>
+      ) : null}
+      {isSignedIn && showConsoleAction ? (
+        <a
+          className="amr-account-control__action"
+          href={consoleUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label={t('settings.amrConsole')}
+        >
+          {t('settings.amrConsole')}
+        </a>
       ) : null}
       {isSignedIn && onSignOut ? (
         <button
@@ -186,6 +203,7 @@ export function AmrLoginPill({
   skipInitialRefresh = false,
   signInLabel,
   revealPendingCancelAction = false,
+  showConsoleAction = false,
   onStatusChange,
 }: AmrLoginPillProps) {
   const { t } = useI18n();
@@ -449,6 +467,7 @@ export function AmrLoginPill({
         hideSignedOutStatus={hideSignedOutStatus}
         hideSignedInStatus={hideSignedInStatus}
         signInLabel={signInLabel}
+        showConsoleAction={showConsoleAction}
         signInDisabled={loginInFlight}
         signOutDisabled={logoutInFlight}
         showCancelSignInAction={revealPendingCancelAction && loginInFlight}

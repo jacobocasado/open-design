@@ -1369,6 +1369,9 @@
   white-space: nowrap;
 }
 .agent-card-amr-auth .amr-account-control__action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   min-height: 36px;
   padding: 0 18px;
   border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
@@ -1377,6 +1380,8 @@
   color: var(--text);
   font-size: 13px;
   font-weight: 680;
+  text-decoration: none;
+  white-space: nowrap;
   cursor: pointer;
   transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease, transform 120ms ease;
 }

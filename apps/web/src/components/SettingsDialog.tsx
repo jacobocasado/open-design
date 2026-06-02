@@ -2980,6 +2980,7 @@ export function SettingsDialog({
                                         initialStatus={amrCardStatus}
                                         skipInitialRefresh
                                         signInLabel={t('settings.amrAuthorize')}
+                                        showConsoleAction={amrCardStatus?.loggedIn === true}
                                         revealPendingCancelAction={amrRevealPendingCancelAction}
                                         onStatusChange={setAmrCardStatus}
                                       />

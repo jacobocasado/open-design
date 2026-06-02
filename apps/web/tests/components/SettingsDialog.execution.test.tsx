@@ -76,6 +76,7 @@ import { SettingsDialog } from '../../src/components/SettingsDialog';
 import type { AgentRefreshOptions, SettingsSection } from '../../src/components/SettingsDialog';
 import { I18nProvider } from '../../src/i18n';
 import { LOCALES } from '../../src/i18n/types';
+import { AMR_CONSOLE_URL } from '../../src/runtime/amr-guidance';
 import type { AgentInfo, AppConfig, AppVersionInfo } from '../../src/types';
 
 const baseConfig: AppConfig = {
@@ -1513,6 +1514,7 @@ describe('SettingsDialog execution settings Local CLI interactions', () => {
     expect(screen.getByText('Many models')).toBeTruthy();
     expect(screen.queryByText('Limited bonus: +100%')).toBeNull();
     expect(await screen.findByRole('button', { name: 'Authorize' })).toBeTruthy();
+    expect(screen.queryByRole('link', { name: 'AMR Console' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Test' })).toBeNull();
   });
 
@@ -2264,6 +2266,10 @@ describe('SettingsDialog execution settings Local CLI interactions', () => {
     fireEvent.click(screen.getByRole('tab', { name: /Local CLI.*1 installed/i }));
 
     expect(await screen.findByRole('button', { name: 'Sign out' })).toBeTruthy();
+    const consoleLink = screen.getByRole('link', { name: 'AMR Console' });
+    expect(consoleLink.getAttribute('href')).toBe(AMR_CONSOLE_URL);
+    expect(consoleLink.getAttribute('target')).toBe('_blank');
+    expect(consoleLink.getAttribute('rel')).toBe('noopener noreferrer');
     expect(screen.getByRole('button', { name: /^Open Design AMR\b/ })).toBeTruthy();
     expect(screen.getByText('signed-in@example.com')).toBeTruthy();
     expect(screen.queryByText(/AMR \(vela\)/i)).toBeNull();

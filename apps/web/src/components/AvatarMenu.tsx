@@ -10,6 +10,7 @@ import { mergeProviderModelOptions, providerModelsCacheKey } from './SettingsDia
 import { apiProtocolLabel } from '../utils/apiProtocol';
 import { fetchProviderModels } from '../providers/provider-models';
 import { isMacPlatform } from '../utils/platform';
+import { AMR_CONSOLE_URL } from '../runtime/amr-guidance';
 
 interface Props {
   config: AppConfig;
@@ -82,6 +83,9 @@ export function AvatarMenu({
   );
 
   const installedAgents = agents.filter((a) => a.available);
+  const amrAvailable = installedAgents.some((a) => a.id === 'amr');
+  const showAmrAccountShortcut =
+    config.mode === 'daemon' && currentAgent?.id === 'amr' && amrAvailable;
 
   // Resolve the user's model + reasoning pick for the active agent. Falls
   // back to the agent's first declared option (`'default'`) when the user
@@ -187,6 +191,24 @@ export function AvatarMenu({
                   : t('avatar.noAgentSelected')}
             </span>
           </div>
+          {showAmrAccountShortcut ? (
+            <a
+              className="avatar-amr-account-link"
+              href={AMR_CONSOLE_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={() => setOpen(false)}
+            >
+              <span className="avatar-amr-account-link__icon" aria-hidden>
+                <RemixIcon name="wallet-3-line" size={15} />
+              </span>
+              <span className="avatar-amr-account-link__copy">
+                <span>{t('avatar.amrConsole')}</span>
+                <span>{t('avatar.amrConsoleMeta')}</span>
+              </span>
+              <RemixIcon name="external-link-line" size={13} />
+            </a>
+          ) : null}
 
           <button
             type="button"
