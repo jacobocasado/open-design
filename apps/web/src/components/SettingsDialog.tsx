@@ -114,6 +114,7 @@ import { ByokProviderPicker } from './byok/ByokProviderPicker';
 import {
   blockingByokDraftFields,
   blockingByokDraftIssues,
+  cleanByokApiKey,
   validateByokDraft,
   type ByokDraftField,
   type ByokDraftIssue,
@@ -1304,7 +1305,7 @@ export function SettingsDialog({
         {
           protocol: apiProtocol,
           baseUrl: cfg.baseUrl,
-          apiKey: cfg.apiKey,
+          apiKey: cleanByokApiKey(cfg.apiKey),
           model: cfg.model,
           apiVersion:
             apiProtocol === 'azure'
@@ -1446,7 +1447,7 @@ export function SettingsDialog({
         {
           protocol: apiProtocol,
           baseUrl: cfg.baseUrl,
-          apiKey: cfg.apiKey,
+          apiKey: cleanByokApiKey(cfg.apiKey),
         },
         controller.signal,
       );
@@ -1897,6 +1898,15 @@ export function SettingsDialog({
     setProviderModelsCommittedKey(providerModelsKey);
   };
   const onByokKeyCommit = () => {
+    // Normalize the stored key on blur so the value that flows into the
+    // connection-test / model-fetch requests below (and back to the daemon
+    // via autosave) is already free of pasted whitespace / zero-width
+    // characters — otherwise a key like "sk-ant-...\n" would only raise a
+    // non-blocking warning yet still go out malformed over the wire.
+    const cleanedApiKey = cleanByokApiKey(cfg.apiKey);
+    if (cleanedApiKey !== cfg.apiKey) {
+      updateApiConfig({ apiKey: cleanedApiKey });
+    }
     commitProviderModelsInputs();
     handleAutoTestProvider();
   };

@@ -1057,6 +1057,47 @@ describe('SettingsDialog execution settings BYOK interactions', () => {
     });
   });
 
+  it('sends a cleaned API key when the pasted value has trailing newline/zero-width characters', async () => {
+    let sentApiKey: unknown;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = input.toString();
+      if (url === '/api/memory') {
+        return new Response(
+          JSON.stringify({ enabled: true, memories: [], extraction: null }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      expect(url).toBe('/api/test/connection');
+      sentApiKey = JSON.parse(String(init?.body)).apiKey;
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          kind: 'ok',
+          latencyMs: 7,
+          model: 'claude-sonnet-4-5',
+          sample: 'pong',
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    // Leading zero-width char + trailing newline/tab — the exact shape a
+    // pasted key picks up from a docs code block or a terminal copy.
+    renderSettingsDialog({ apiKey: '\u200Bsk-ant-test-provider\n\t' });
+
+    fireEvent.blur(screen.getByLabelText('API key'));
+
+    await waitFor(() => {
+      const testConnectionCalls = fetchMock.mock.calls.filter(
+        ([input]) => input.toString() === '/api/test/connection',
+      );
+      expect(testConnectionCalls).toHaveLength(1);
+    });
+    // The malformed value must never reach the wire.
+    expect(sentApiKey).toBe('sk-ant-test-provider');
+  });
+
   it('lets users retry a failed BYOK connection test without editing the API key', async () => {
     let attempt = 0;
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
