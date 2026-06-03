@@ -12,7 +12,7 @@ import {
   projectKindToTracking,
   fidelityToTracking,
 } from '@open-design/contracts/analytics';
-import type { ChatSessionMode } from '@open-design/contracts';
+import type { AmrModelsResponse, ChatSessionMode } from '@open-design/contracts';
 import { EntryView } from './components/EntryView';
 import type { IntegrationTab } from './components/IntegrationsView';
 import { MarketplaceView } from './components/MarketplaceView';
@@ -51,7 +51,12 @@ import {
   fetchSkills,
   uploadProjectFiles,
 } from './providers/registry';
-import { RUNS_CHANGED_EVENT, listProjectRuns } from './providers/daemon';
+import {
+  RUNS_CHANGED_EVENT,
+  fetchAmrModels,
+  listProjectRuns,
+  type VelaLoginStatus,
+} from './providers/daemon';
 import { navigate, useRoute } from './router';
 import {
   fetchDaemonConfig,
@@ -143,9 +148,18 @@ export async function persistComposioConfigChange(
 }
 
 export function buildPersistedConfig(next: AppConfig, current: AppConfig): AppConfig {
+  const stalePrivacySnapshot =
+    current.privacyDecisionAt != null && next.privacyDecisionAt == null;
   return {
     ...next,
     onboardingCompleted: current.onboardingCompleted ? true : next.onboardingCompleted,
+    ...(stalePrivacySnapshot
+      ? {
+          installationId: current.installationId,
+          privacyDecisionAt: current.privacyDecisionAt,
+          telemetry: current.telemetry,
+        }
+      : {}),
     composio: next.composio
       ? {
           apiKey: '',
@@ -182,6 +196,22 @@ export function resolveSettingsCloseConfig(
 ): AppConfig {
   const base = latestPersisted === rendered ? rendered : latestPersisted;
   return base.onboardingCompleted ? base : { ...base, onboardingCompleted: true };
+}
+
+function mergeAmrModelsIntoAgents(
+  agents: AgentInfo[],
+  amrModels: AmrModelsResponse | null,
+): AgentInfo[] {
+  if (!amrModels || amrModels.models.length === 0) return agents;
+  return agents.map((agent) => {
+    if (agent.id !== 'amr') return agent;
+    const shouldPreferAgentModels =
+      amrModels.source === 'preset' &&
+      Array.isArray(agent.models) &&
+      agent.models.length > 0;
+    if (shouldPreferAgentModels) return agent;
+    return { ...agent, models: amrModels.models, modelsSource: 'live' };
+  });
 }
 
 export function App() {
@@ -221,6 +251,8 @@ function AppInner() {
   const [integrationInitialTab, setIntegrationInitialTab] = useState<IntegrationTab>('mcp');
   const [daemonLive, setDaemonLive] = useState(false);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
+  const amrModelsRef = useRef<AmrModelsResponse | null>(null);
+  const [amrPollRestartToken, setAmrPollRestartToken] = useState(0);
   const [providerModelsCache, setProviderModelsCache] = useState<
     Record<string, ProviderModelOption[]>
   >({});
@@ -493,6 +525,43 @@ function AppInner() {
     });
   }, [activeProjectId, activeFileName]);
 
+  useEffect(() => {
+    if (!daemonLive) return;
+    let cancelled = false;
+    let timer: number | null = null;
+    const pollDelayMs = 1_000;
+    const maxPresetPolls = 10;
+    let presetPolls = 0;
+
+    const applyAmrModels = async () => {
+      const result = await fetchAmrModels();
+      if (cancelled || !result || !Array.isArray(result.models) || result.models.length === 0) return;
+      amrModelsRef.current = result;
+      setAgents((current) => mergeAmrModelsIntoAgents(current, result));
+      const shouldPollPreset =
+        result.source === 'preset' &&
+        !result.remoteError &&
+        presetPolls < maxPresetPolls;
+      if (shouldPollPreset) {
+        presetPolls += 1;
+        timer = window.setTimeout(() => {
+          void applyAmrModels();
+        }, pollDelayMs);
+      }
+    };
+
+    void applyAmrModels();
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [amrPollRestartToken, daemonLive]);
+
+  const handleAmrLoginStatusChange = useCallback((status: VelaLoginStatus | null) => {
+    if (status?.loggedIn !== true) return;
+    setAmrPollRestartToken((current) => current + 1);
+  }, []);
+
   // Bootstrap — detect daemon, then fan out independent fetches so each
   // entry-view tab can render the moment its own data lands. Earlier this
   // was one Promise.all behind a global "Loading workspace…" placeholder,
@@ -522,7 +591,7 @@ function AppInner() {
 
       void fetchAgents().then((list) => {
         if (cancelled) return;
-        setAgents(list);
+        setAgents(mergeAmrModelsIntoAgents(list, amrModelsRef.current));
         setAgentsLoading(false);
       });
 
@@ -924,12 +993,13 @@ function AppInner() {
     async (options?: { throwOnError?: boolean; agentCliEnv?: AppConfig['agentCliEnv'] }) => {
       if (options && Object.prototype.hasOwnProperty.call(options, 'agentCliEnv')) {
         const nextConfig = { ...config, agentCliEnv: options.agentCliEnv ?? {} };
+        amrModelsRef.current = null;
         saveConfig(nextConfig);
         await syncConfigToDaemon(nextConfig);
         setConfig(nextConfig);
       }
       const next = await fetchAgents({ throwOnError: options?.throwOnError });
-      setAgents(next);
+      setAgents(mergeAmrModelsIntoAgents(next, amrModelsRef.current));
       return next;
     },
     [config],
@@ -1766,6 +1836,7 @@ function AppInner() {
             setSettingsHighlight(null);
           }}
           onRefreshAgents={refreshAgents}
+          onAmrLoginStatusChange={handleAmrLoginStatusChange}
           onSkillsRefresh={refreshSkills}
           daemonMediaProviders={daemonMediaProviders}
           daemonMediaProvidersFetchState={daemonMediaProvidersFetchState}

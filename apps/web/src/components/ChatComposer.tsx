@@ -58,6 +58,7 @@ import {
 } from './composer/LexicalComposerInput';
 import { CaretFloatingLayer } from './composer/CaretFloatingLayer';
 import { ANNOTATION_EVENT, type AnnotationEventDetail } from "./PreviewDrawOverlay";
+import { SearchableModelSelect } from './modelOptions';
 import { DesignSystemSwitchPicker } from "./DesignSystemSwitchPicker";
 
 type TranslateFn = (key: keyof Dict, vars?: Record<string, string | number>) => string;
@@ -2027,31 +2028,24 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
               >
                 {t('settings.byokImageModel')}
               </label>
-              <select
+              <SearchableModelSelect
                 id="composer-byok-image-model-select"
+                className="inline-switcher__select composer-byok-image-model__select"
                 value={byokImageModel ?? ''}
-                onChange={(e) => onChangeByokImageModel(e.target.value)}
-                style={{
-                  background: 'transparent',
-                  border: '1px solid var(--border, #444)',
-                  borderRadius: 4,
-                  padding: '2px 6px',
-                  color: 'inherit',
-                  fontSize: 12,
-                }}
-              >
-                <option value="">
-                  {(IMAGE_MODELS.find((m) => m.provider === 'senseaudio')?.label
-                    ?? 'senseaudio-image-2.0') + ' (default)'}
-                </option>
-                {IMAGE_MODELS.filter((m) => m.provider === 'senseaudio').map(
-                  (m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.label}
-                    </option>
-                  ),
-                )}
-              </select>
+                onChange={(value) => onChangeByokImageModel(value)}
+                models={IMAGE_MODELS.filter((m) => m.provider === 'senseaudio').map((m) => ({ id: m.id, label: m.label }))}
+                additionalOptions={[
+                  {
+                    value: '',
+                    label: (IMAGE_MODELS.find((m) => m.provider === 'senseaudio')?.label
+                      ?? 'senseaudio-image-2.0') + ' (default)',
+                  },
+                ]}
+                searchPlaceholder={t('newproj.modelSearch')}
+                searchInputTestId="composer-byok-image-model-search"
+                popoverTestId="composer-byok-image-model-popover"
+                style={{ fontSize: 12 }}
+              />
             </div>
           ) : null}
           <div

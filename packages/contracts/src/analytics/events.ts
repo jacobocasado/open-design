@@ -141,7 +141,8 @@ export type TrackingByokProviderId =
   | 'senseaudio';
 
 // v2 CLI provider catalogue (CSV row 63 + image 59). Adds `qoder_cli` and
-// `kilo` over v1.
+// `kilo` over v1, plus `amr` (the vela CLI runtime) so AMR runs no longer
+// fold into the `other` catch-all bucket.
 export type TrackingCliProviderId =
   | 'claude_code'
   | 'codex_cli'
@@ -156,6 +157,7 @@ export type TrackingCliProviderId =
   | 'github_copilot_cli'
   | 'pi'
   | 'kilo'
+  | 'amr'
   | 'other';
 
 export type TrackingFeedbackProviderId =
@@ -2290,6 +2292,8 @@ export function agentIdToTracking(agentId: string | null | undefined): TrackingC
       return 'pi';
     case 'kilo':
       return 'kilo';
+    case 'amr':
+      return 'amr';
     default:
       return 'other';
   }
