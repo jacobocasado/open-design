@@ -391,6 +391,63 @@ describe('HomeView context picker', () => {
     })));
   });
 
+  it('keeps a "Use"-added plugin context at submit even without an @mention (#3555)', async () => {
+    const usePlugin = makePlugin('use-plugin', 'Use Plugin');
+    const fetchMock = vi.fn<typeof fetch>(async (url) => {
+      if (typeof url === 'string' && url === '/api/plugins') {
+        return new Response(JSON.stringify({ plugins: [usePlugin] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (typeof url === 'string' && url === '/api/mcp/servers') {
+        return new Response(JSON.stringify({ servers: [], templates: [] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      cb(0);
+      return 0;
+    });
+    const onSubmit = vi.fn();
+
+    // The "Use" / "Use from details" flows route through promptHandoff with
+    // source 'plugin-use', which calls requestPluginContextUse(record, 'use')
+    // and pushes the context WITHOUT injecting an `@mention` into the prompt.
+    render(
+      <HomeView
+        projects={[]}
+        promptHandoff={{ id: 1, pluginId: 'use-plugin', focus: false, source: 'plugin-use', action: 'use' }}
+        onSubmit={onSubmit}
+        onOpenProject={() => undefined}
+        onViewAllProjects={() => undefined}
+      />,
+    );
+
+    const input = await screen.findByTestId('home-hero-input');
+
+    // The "Use" path injects no `@mention`, so there is no inline chip to wait
+    // on — the context lives purely in selectedPluginContexts. A normal prompt
+    // with no `@Use Plugin` mention must NOT drop it: only mention-backed
+    // entries are gated on presence at submit time.
+    fireEvent.change(input, { target: { value: 'Build me a dashboard' } });
+    await waitFor(() => {
+      expect((input as HTMLTextAreaElement).value).toBe('Build me a dashboard');
+    });
+    fireEvent.click(screen.getByTestId('home-hero-submit'));
+
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+      prompt: 'Build me a dashboard',
+      contextPlugins: [
+        expect.objectContaining({ id: 'use-plugin', title: 'Use Plugin' }),
+      ],
+    }));
+  });
+
   it('submits selected MCP servers and connectors as first-turn context', async () => {
     const fetchMock = vi.fn<typeof fetch>(async (url) => {
       if (typeof url === 'string' && url === '/api/plugins') {
