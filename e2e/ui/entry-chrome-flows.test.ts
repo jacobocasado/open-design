@@ -66,7 +66,7 @@ test.beforeEach(async ({ page }) => {
   await applyStandardMocks(page);
 });
 
-test('entry chrome exposes the primary home creation surface and settings entry', async ({ page }) => {
+test('[P0] entry chrome exposes the primary home creation surface and settings entry', async ({ page }) => {
   await page.route('**/api/projects', async (route) => {
     if (route.request().method() === 'GET') {
       await route.fulfill({ json: { projects: [] } });
@@ -109,7 +109,7 @@ test('entry chrome exposes the primary home creation surface and settings entry'
   await expect(settingsDialog.getByRole('button', { name: /show pet picker/i })).toHaveCount(0);
 });
 
-test('entry top navigation matches the current home tab structure', async ({ page }) => {
+test('[P1] entry top navigation matches the current home tab structure', async ({ page }) => {
   await gotoEntryHome(page);
 
   await expect(page.getByTestId('entry-nav-logo')).toBeVisible();
@@ -132,7 +132,7 @@ test('entry top navigation matches the current home tab structure', async ({ pag
   await expect(page.getByTestId('plugins-home-row-subcategory-prototype')).toHaveCount(0);
 });
 
-test('home view exposes the redesigned hero, recent projects, and starters', async ({ page }) => {
+test('[P1] home view exposes the redesigned hero, recent projects, and starters', async ({ page }) => {
   await createProject(page, 'Home structure recent project');
   await gotoEntryHome(page);
 
@@ -148,7 +148,7 @@ test('home view exposes the redesigned hero, recent projects, and starters', asy
   await expect(page.getByTestId('entry-nav-projects')).toHaveAttribute('aria-current', 'page');
 });
 
-test('recent projects strip opens a project card and view all routes to the projects index', async ({ page }) => {
+test('[P0] recent projects strip opens a project card and view all routes to the projects index', async ({ page }) => {
   const created = await createProject(page, 'Recent project entry point');
   await gotoEntryHome(page);
 
@@ -163,7 +163,7 @@ test('recent projects strip opens a project card and view all routes to the proj
   await expect(page.getByTestId('entry-nav-projects')).toHaveAttribute('aria-current', 'page');
 });
 
-test('design systems page is reachable from entry nav and supports search, preview, and default selection', async ({ page }) => {
+test('[P1] design systems page is reachable from entry nav and supports search, preview, and default selection', async ({ page }) => {
   const persistedConfigs: Array<{ designSystemId?: string | null }> = [];
   await routeDesignSystems(page);
   await page.route('**/api/app-config', async (route) => {
@@ -232,7 +232,7 @@ test('design systems page is reachable from entry nav and supports search, previ
     .toBe('airbnb');
 });
 
-test('entry chrome avoids horizontal overflow on compact desktop width', async ({ page }) => {
+test('[P2] entry chrome avoids horizontal overflow on compact desktop width', async ({ page }) => {
   await page.setViewportSize({ width: 820, height: 900 });
   await gotoEntryHome(page);
   await expect(page.locator('.entry-main__topbar')).toBeVisible();
@@ -256,7 +256,7 @@ test('entry chrome avoids horizontal overflow on compact desktop width', async (
   expect(pageOverflow).toBeLessThanOrEqual(2);
 });
 
-test('entry execution pill opens the Local CLI and BYOK switcher from Home', async ({ page }) => {
+test('[P0] entry execution pill opens the Local CLI and BYOK switcher from Home', async ({ page }) => {
   await page.addInitScript((key) => {
     window.localStorage.setItem(
       key,
@@ -368,7 +368,7 @@ test('entry execution pill opens the Local CLI and BYOK switcher from Home', asy
   await expect(page.getByRole('tab', { name: LOCAL_CLI_LABEL })).toBeVisible();
 });
 
-test('entry help menu exposes community links and topbar routes Use everywhere', async ({ page }) => {
+test('[P2] entry help menu exposes community links and topbar routes Use everywhere', async ({ page }) => {
   await gotoEntryHome(page);
 
   await page.getByTestId('entry-help-trigger').click();
@@ -398,7 +398,7 @@ test('entry help menu exposes community links and topbar routes Use everywhere',
   await expect(menu).toHaveCount(0);
 });
 
-test('home topbar overlays close on outside click, Escape, and Settings open', async ({ page }) => {
+test('[P2] home topbar overlays close on outside click, Escape, and Settings open', async ({ page }) => {
   await gotoEntryHome(page);
 
   const pill = page.getByTestId('inline-model-switcher-chip');
@@ -428,7 +428,7 @@ test('home topbar overlays close on outside click, Escape, and Settings open', a
   await expect(executionPopover).toHaveCount(0);
 });
 
-test('entry execution pill remains available across secondary entry pages', async ({ page }) => {
+test('[P1] entry execution pill remains available across secondary entry pages', async ({ page }) => {
   await routeDesignSystems(page);
   await gotoEntryHome(page);
 
@@ -455,7 +455,7 @@ test('entry execution pill remains available across secondary entry pages', asyn
   }
 });
 
-test('home starters can browse registry and use a starter query from Home', async ({ page }) => {
+test('[P1] home starters can browse registry and use a starter query from Home', async ({ page }) => {
   await page.route('**/api/plugins', async (route) => {
     await route.fulfill({
       json: {
@@ -486,7 +486,7 @@ test('home starters can browse registry and use a starter query from Home', asyn
   await expect(input).toHaveText('Make a design systems brief.');
 });
 
-test('home starters shows the empty catalog state when no plugins are available', async ({ page }) => {
+test('[P2] home starters shows the empty catalog state when no plugins are available', async ({ page }) => {
   await page.route('**/api/plugins', async (route) => {
     await route.fulfill({
       json: {
@@ -499,7 +499,7 @@ test('home starters shows the empty catalog state when no plugins are available'
   await expect(page.getByTestId('plugins-home-section')).toContainText('Catalog is empty.');
 });
 
-test('home starters search and facet filters narrow the visible gallery', async ({ page }) => {
+test('[P2] home starters search and facet filters narrow the visible gallery', async ({ page }) => {
   await page.route('**/api/plugins', async (route) => {
     await route.fulfill({
       json: {
@@ -543,7 +543,7 @@ test('home starters search and facet filters narrow the visible gallery', async 
   await expect(page.locator('[data-plugin-id="figma-importer"]')).toHaveCount(0);
 });
 
-test('home starters can jump into plugin creation through the registry browse flow', async ({ page }) => {
+test('[P1] home starters can jump into plugin creation through the registry browse flow', async ({ page }) => {
   await page.route('**/api/plugins', async (route) => {
     await route.fulfill({
       json: {
@@ -561,7 +561,7 @@ test('home starters can jump into plugin creation through the registry browse fl
   await expect(page.getByTestId('home-hero-input')).toHaveText(/Create an Open Design plugin/i);
 });
 
-test('home starters search can enter a no-results state and recover with clear', async ({ page }) => {
+test('[P2] home starters search can enter a no-results state and recover with clear', async ({ page }) => {
   await page.route('**/api/plugins', async (route) => {
     await route.fulfill({
       json: {
@@ -582,7 +582,7 @@ test('home starters search can enter a no-results state and recover with clear',
   await expect(page.locator('[data-plugin-id="deck-writer"]')).toBeVisible();
 });
 
-test('home starters details modal opens from a gallery card and closes on Escape', async ({ page }) => {
+test('[P2] home starters details modal opens from a gallery card and closes on Escape', async ({ page }) => {
   await page.route('**/api/plugins', async (route) => {
     await route.fulfill({
       json: {
@@ -607,7 +607,7 @@ test('home starters details modal opens from a gallery card and closes on Escape
   await expect(dialog).toHaveCount(0);
 });
 
-test('home starters html details modal exposes header actions and closes from the close button', async ({ page }) => {
+test('[P2] home starters html details modal exposes header actions and closes from the close button', async ({ page }) => {
   const htmlPlugin = makeStarterPlugin({
     id: 'html-details-plugin',
     title: 'HTML Details Plugin',
@@ -652,7 +652,7 @@ test('home starters html details modal exposes header actions and closes from th
   await expect(dialog).toHaveCount(0);
 });
 
-test('home starters html details modal shows metadata links, supports copy query, and opens the plugin share menu', async ({ page }) => {
+test('[P2] home starters html details modal shows metadata links, supports copy query, and opens the plugin share menu', async ({ page }) => {
   const htmlPlugin = makeStarterPlugin({
     id: 'html-metadata-plugin',
     title: 'HTML Metadata Plugin',
@@ -747,7 +747,7 @@ test('home starters html details modal shows metadata links, supports copy query
   await expect(shareMenu.getByRole('menuitem', { name: /Open in marketplace/i })).toBeVisible();
 });
 
-test('home starters Use plugin from the details modal applies the plugin to the home hero', async ({ page }) => {
+test('[P1] home starters Use plugin from the details modal applies the plugin to the home hero', async ({ page }) => {
   const htmlPlugin = makeStarterPlugin({
     id: 'detail-use-plugin',
     title: 'Detail Use Plugin',
@@ -781,7 +781,7 @@ test('home starters Use plugin from the details modal applies the plugin to the 
   await expect(page.getByTestId('home-hero-input')).toHaveText('');
 });
 
-test('home starters direct Use keeps prompt empty and still allows a freeform submit', async ({ page }) => {
+test('[P0] home starters direct Use keeps prompt empty and still allows a freeform submit', async ({ page }) => {
   await page.route('**/api/plugins', async (route) => {
     await route.fulfill({
       json: {
@@ -818,7 +818,7 @@ test('home starters direct Use keeps prompt empty and still allows a freeform su
   await expect(page).toHaveURL(/\/projects\//);
 });
 
-test('home starters Use with query hydrates the prompt and keeps plugin context visible', async ({ page }) => {
+test('[P1] home starters Use with query hydrates the prompt and keeps plugin context visible', async ({ page }) => {
   await page.route('**/api/plugins', async (route) => {
     await route.fulfill({
       json: {
@@ -841,7 +841,7 @@ test('home starters Use with query hydrates the prompt and keeps plugin context 
   await expect(input).toHaveText('Make a design systems brief.');
 });
 
-test('home starters Use with query carries the hydrated starter prompt into the created project and first user turn', async ({ page }) => {
+test('[P0] home starters Use with query carries the hydrated starter prompt into the created project and first user turn', async ({ page }) => {
   await page.route('**/api/plugins', async (route) => {
     await route.fulfill({
       json: {
@@ -893,7 +893,7 @@ test('home starters Use with query carries the hydrated starter prompt into the 
   ).toBe(true);
 });
 
-test('home hero input keeps Shift+Enter as a newline and submits on Enter', async ({ page }) => {
+test('[P0] home hero input keeps Shift+Enter as a newline and submits on Enter', async ({ page }) => {
   await gotoEntryHome(page);
 
   const input = page.getByTestId('home-hero-input');
@@ -927,7 +927,7 @@ test('home hero input keeps Shift+Enter as a newline and submits on Enter', asyn
   await expect(page).toHaveURL(/\/projects\//);
 });
 
-test('home hero @ mention picker opens and Enter applies the highlighted plugin', async ({ page }) => {
+test('[P1] home hero @ mention picker opens and Enter applies the highlighted plugin', async ({ page }) => {
   await page.route('**/api/plugins', async (route) => {
     await route.fulfill({
       json: {
@@ -952,7 +952,7 @@ test('home hero @ mention picker opens and Enter applies the highlighted plugin'
   await expect(input).toHaveText('@Localized Plugin');
 });
 
-test('home hero attachment input stages files, enables submit, and supports removal', async ({ page }) => {
+test('[P0] home hero attachment input stages files, enables submit, and supports removal', async ({ page }) => {
   await gotoEntryHome(page);
 
   const input = page.getByTestId('home-hero-file-input');
@@ -975,7 +975,7 @@ test('home hero attachment input stages files, enables submit, and supports remo
   await expect(submit).toBeDisabled();
 });
 
-test('home hero attachment-only submit uploads the file and sends it with the first message', async ({ page }) => {
+test('[P0] home hero attachment-only submit uploads the file and sends it with the first message', async ({ page }) => {
   await gotoEntryHome(page);
 
   const uploadResponse = page.waitForResponse(
