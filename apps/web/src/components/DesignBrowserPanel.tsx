@@ -21,6 +21,7 @@ import {
   writeProjectTextFile,
 } from '../providers/registry';
 import { useT } from '../i18n';
+import type { Dict } from '../i18n/types';
 import { captureHostRegionSnapshot } from '../runtime/exports';
 import { buildBoardCommentAttachments, commentsToAttachments } from '../comments';
 import type {
@@ -100,6 +101,8 @@ export interface BrowserUseAction {
 export interface BrowserUseCategory {
   id: BrowserUseCategoryId;
   title: string;
+  titleKey: keyof Dict;
+  searchTerms?: string[];
   actions: BrowserUseAction[];
 }
 
@@ -427,7 +430,9 @@ export function filterReferenceGroups(
 export const BROWSER_USE_CATEGORIES: BrowserUseCategory[] = [
   {
     id: 'assets',
-    title: '素材提取',
+    title: 'Asset extraction',
+    titleKey: 'browserUse.category.assets',
+    searchTerms: ['assets', 'images', 'svg'],
     actions: [
       { id: 'extract_logo', label: 'extract_logo', input: 'none', output: 'Best logo candidates from header/nav/class/position plus og/favicon fallback.', prompt: 'Find likely site logo assets using DOM position, class names, header/nav context, OG image, and favicon evidence.' },
       { id: 'list_images', label: 'list_images', input: 'none', output: 'All img/srcset/source/CSS background images with dimensions and alt text.', prompt: 'Inventory every visible and CSS-referenced image, including dimensions, alt text, and source URLs.' },
@@ -438,7 +443,9 @@ export const BROWSER_USE_CATEGORIES: BrowserUseCategory[] = [
   },
   {
     id: 'tokens',
-    title: '设计语言',
+    title: 'Design language',
+    titleKey: 'browserUse.category.tokens',
+    searchTerms: ['tokens', 'palette', 'typography'],
     actions: [
       { id: 'extract_colors', label: 'extract_colors', input: 'none', output: 'Weighted palette plus :root CSS variables as palette.json and palette.html.', prompt: 'Extract the weighted color palette and CSS color variables, then save a JSON file and visual swatch preview.' },
       { id: 'extract_fonts', label: 'extract_fonts', input: 'none', output: 'Top font families, sizes, weights, and @font-face rules as typography.json.', prompt: 'Extract computed font families, size/weight usage, and @font-face declarations from the current page.' },
@@ -455,14 +462,18 @@ export const BROWSER_USE_CATEGORIES: BrowserUseCategory[] = [
   },
   {
     id: 'motion',
-    title: '动效',
+    title: 'Motion',
+    titleKey: 'browserUse.category.motion',
+    searchTerms: ['animation', 'motion'],
     actions: [
       { id: 'extract_animations', label: 'extract_animations', input: 'optional selector', output: '@keyframes, transition/transform rules, detected motion libraries, motion.css, motion.json.', prompt: 'Extract animation evidence from the page or selector scope, including keyframes, transitions, transforms, and motion libraries.' },
     ],
   },
   {
     id: 'visual',
-    title: '视觉校验',
+    title: 'Visual QA',
+    titleKey: 'browserUse.category.visual',
+    searchTerms: ['screenshot', 'accessibility', 'layout'],
     actions: [
       { id: 'validate_view', label: 'validate_view', input: 'requirement, selector? optional', output: 'Screenshot paths plus structured visual/layout issues.', prompt: 'Validate the current view against the requirement using screenshots plus layout audit evidence, then return issues and asset paths.' },
       { id: 'audit_layout', label: 'audit_layout', input: 'selector? optional', output: 'Layout defects: overflow, bounds, overlap, clipped text as audit.json.', prompt: 'Run a deterministic layout audit for overflow, out-of-bounds elements, text overlap, and clipped text.' },
@@ -477,7 +488,9 @@ export const BROWSER_USE_CATEGORIES: BrowserUseCategory[] = [
   },
   {
     id: 'structure',
-    title: '组件结构',
+    title: 'Component structure',
+    titleKey: 'browserUse.category.structure',
+    searchTerms: ['html', 'copy', 'forms', 'nav'],
     actions: [
       { id: 'extract_html', label: 'extract_html', input: "selector='body'", output: 'Clean self-contained HTML without script/noscript/on* attributes.', prompt: 'Extract clean self-contained HTML for the selected area, removing scripts and inline event handlers.' },
       { id: 'extract_component_inventory', label: 'extract_component_inventory', input: 'none', output: 'Repeated component patterns, selectors, counts, and screenshots.', prompt: 'Inventory repeated component patterns such as cards, nav items, pricing rows, modals, accordions, and tables.' },
@@ -488,7 +501,9 @@ export const BROWSER_USE_CATEGORIES: BrowserUseCategory[] = [
   },
   {
     id: 'project',
-    title: '项目运行',
+    title: 'Project runtime',
+    titleKey: 'browserUse.category.project',
+    searchTerms: ['dev server', 'framework'],
     actions: [
       { id: 'run_project', label: 'run_project', input: 'none', output: 'Detected dev server URL opened in Browser tab.', prompt: 'Detect, install if needed, run the project dev server, find the local URL, and open it in the Browser tab.' },
       { id: 'detect_project', label: 'detect_project', input: 'none', output: 'Framework, package manager, install command, dev command, and port.', prompt: 'Detect the project setup from package files, lockfiles, and framework config, then report install/dev commands and likely ports.' },
@@ -496,7 +511,9 @@ export const BROWSER_USE_CATEGORIES: BrowserUseCategory[] = [
   },
   {
     id: 'general',
-    title: '通用操作',
+    title: 'General actions',
+    titleKey: 'browserUse.category.general',
+    searchTerms: ['metadata', 'navigate', 'terminal'],
     actions: [
       { id: 'page_info', label: 'page_info', input: 'none', output: 'URL, title, description, OG image, theme color, favicon, viewport.', prompt: 'Read compact metadata for the bound Browser tab: URL, title, description, OG/Twitter cards, theme color, favicon, and viewport.' },
       { id: 'snapshot', label: 'snapshot', input: 'none', output: 'Up to 120 visible interactive/text elements with tag, label, href, and coordinates.', prompt: 'Capture a compact DOM interaction snapshot for agent reasoning, capped to the most useful visible controls and text blocks.' },
@@ -525,12 +542,21 @@ export function browserUseActionById(id: string): BrowserUseAction | null {
   return null;
 }
 
-export function filterBrowserUseCategories(groups: BrowserUseCategory[], query: string): BrowserUseCategory[] {
+export function filterBrowserUseCategories(
+  groups: BrowserUseCategory[],
+  query: string,
+  localizeCategoryTitle?: (category: BrowserUseCategory) => string,
+): BrowserUseCategory[] {
   const needle = query.trim().toLocaleLowerCase();
   if (!needle) return groups;
   return groups
     .map((group) => {
-      const groupMatches = group.title.toLocaleLowerCase().includes(needle);
+      const localizedTitle = localizeCategoryTitle?.(group) ?? group.title;
+      const groupMatches = [
+        group.title,
+        localizedTitle,
+        ...(group.searchTerms ?? []),
+      ].some((value) => value.toLocaleLowerCase().includes(needle));
       const actions = groupMatches
         ? group.actions
         : group.actions.filter((action) =>
@@ -1361,7 +1387,7 @@ export function DesignBrowserPanel({
 
   function requestBrowserUsePrompt(action: BrowserUseAction) {
     if (!onRequestBrowserUsePrompt) {
-      setStatusMessage('灵感暂不可用');
+      setStatusMessage(t('browserUse.unavailable'));
       setBrowserUseOpen(false);
       return;
     }
@@ -1369,7 +1395,7 @@ export function DesignBrowserPanel({
     setBrowserUseOpen(false);
     setMenuOpen(false);
     setSuggestionsOpen(false);
-    setStatusMessage('已加入输入框');
+    setStatusMessage(t('browserUse.added'));
   }
 
   function updateActiveTargetStyle(prop: keyof PreviewAnnotationStyle, value: string) {
@@ -1740,7 +1766,7 @@ export function DesignBrowserPanel({
             <Icon name="comment" size={15} />
           </IconTooltipButton>
           <IconTooltipButton
-            label="灵感"
+            label={t('browserUse.title')}
             wrapperClassName="db-action-item db-action-browser-use"
             className={browserUseOpen ? 'is-active' : ''}
             onClick={() => {
@@ -1977,26 +2003,30 @@ function BrowserUseMenu({
 }: {
   onPick: (action: BrowserUseAction) => void;
 }) {
+  const t = useT();
   const [query, setQuery] = useState('');
-  const categories = useMemo(() => filterBrowserUseCategories(BROWSER_USE_CATEGORIES, query), [query]);
+  const categories = useMemo(
+    () => filterBrowserUseCategories(BROWSER_USE_CATEGORIES, query, (category) => t(category.titleKey)),
+    [query, t],
+  );
   const visibleTotal = useMemo(
     () => categories.reduce((sum, category) => sum + category.actions.length, 0),
     [categories],
   );
 
   return (
-    <div className="db-menu db-browser-use-menu" role="menu" aria-label="灵感">
+    <div className="db-menu db-browser-use-menu" role="menu" aria-label={t('browserUse.title')}>
       <div className="db-browser-use-head">
-        <strong>灵感</strong>
-        <small>{BROWSER_USE_ACTION_TOTAL} 个网页操作，优先展示素材提取、设计语言、动效、视觉校验和组件结构。</small>
+        <strong>{t('browserUse.title')}</strong>
+        <small>{t('browserUse.summary', { count: BROWSER_USE_ACTION_TOTAL })}</small>
       </div>
       <label className="db-browser-use-search">
         <Icon name="search" size={13} />
         <input
           type="search"
           value={query}
-          aria-label="搜索灵感"
-          placeholder="搜索截图、字体、配色、a11y..."
+          aria-label={t('browserUse.searchAria')}
+          placeholder={t('browserUse.searchPlaceholder')}
           onChange={(event) => setQuery(event.currentTarget.value)}
         />
         {query ? <span>{visibleTotal}</span> : null}
@@ -2005,7 +2035,7 @@ function BrowserUseMenu({
         {categories.map((category) => (
           <section key={category.id} className="db-browser-use-section">
             <div className="db-browser-use-section-title">
-              <span>{category.title}</span>
+              <span>{t(category.titleKey)}</span>
               <span>{category.actions.length}</span>
             </div>
             {category.actions.map((action) => (
@@ -2027,7 +2057,7 @@ function BrowserUseMenu({
           </section>
         ))}
         {categories.length === 0 ? (
-          <div className="db-browser-use-empty" role="status">没有匹配的灵感</div>
+          <div className="db-browser-use-empty" role="status">{t('browserUse.empty')}</div>
         ) : null}
       </div>
     </div>

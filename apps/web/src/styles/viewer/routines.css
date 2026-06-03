@@ -895,28 +895,12 @@
 .app .split-resize-handle {
   width: 8px;
   min-width: 8px;
-  background:
-    linear-gradient(
-      90deg,
-      transparent 0,
-      transparent 3px,
-      var(--border) 3px,
-      var(--border) 4px,
-      transparent 4px
-    );
+  background: transparent;
 }
 .app .split-resize-handle:hover,
 .app .split-resize-handle:focus-visible,
 .app .split.is-resizing-chat .split-resize-handle {
-  background:
-    linear-gradient(
-      90deg,
-      color-mix(in srgb, var(--accent) 12%, transparent) 0,
-      color-mix(in srgb, var(--accent) 12%, transparent) 3px,
-      var(--accent) 3px,
-      var(--accent) 4px,
-      color-mix(in srgb, var(--accent) 12%, transparent) 4px
-    );
+  background: transparent;
 }
 
 .app .chat-header,

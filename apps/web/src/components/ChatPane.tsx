@@ -479,6 +479,7 @@ export function ChatPane({
   const t = useT();
   const analytics = useAnalytics();
   const logRef = useRef<HTMLDivElement | null>(null);
+  const chatLogScrollIdleTimerRef = useRef<number | null>(null);
   const historyWrapRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<ChatComposerHandle | null>(null);
   const pinnedTodoRef = useRef<HTMLDivElement | null>(null);
@@ -513,6 +514,8 @@ export function ChatPane({
   const [conversationSearch, setConversationSearch] = useState('');
   const deferredConversationSearch = useDeferredValue(conversationSearch);
   const [scrolledFromBottom, setScrolledFromBottom] = useState(false);
+  const [chatLogScrollable, setChatLogScrollable] = useState(false);
+  const [chatLogScrolling, setChatLogScrolling] = useState(false);
   // The user can dismiss the pinned task list once everything is complete.
   // We key the dismissal on the snapshot (serialized TodoWrite input) so
   // the next time the agent emits a different snapshot the card returns,
@@ -766,6 +769,23 @@ export function ChatPane({
     const el = logRef.current;
     if (!el) return;
 
+    function syncScrollable(target: HTMLDivElement) {
+      const next = target.scrollHeight - target.clientHeight > 1;
+      setChatLogScrollable((prev) => (prev === next ? prev : next));
+      if (!next) setChatLogScrolling(false);
+    }
+
+    function markScrolling() {
+      setChatLogScrolling(true);
+      if (chatLogScrollIdleTimerRef.current !== null) {
+        window.clearTimeout(chatLogScrollIdleTimerRef.current);
+      }
+      chatLogScrollIdleTimerRef.current = window.setTimeout(() => {
+        chatLogScrollIdleTimerRef.current = null;
+        setChatLogScrolling(false);
+      }, 650);
+    }
+
     // Restore previously-saved position on remount. Defer to the next
     // frame so the conditional <> contents finish layout before the
     // scrollTop write lands.
@@ -779,6 +799,7 @@ export function ChatPane({
         } else {
           target.scrollTop = saved.scrollTop;
         }
+        syncScrollable(target);
         // Resync the jump-to-latest affordance with the restored
         // position. Without this, a user who left Chat ~60px from the
         // bottom and returns to find new messages stacked underneath
@@ -803,6 +824,8 @@ export function ChatPane({
     function onScroll() {
       const target = logRef.current;
       if (!target) return;
+      syncScrollable(target);
+      markScrolling();
       snapshot(target);
       const distance =
         target.scrollHeight - target.scrollTop - target.clientHeight;
@@ -814,6 +837,7 @@ export function ChatPane({
       setScrolledFromBottom((prev) => (prev === next ? prev : next));
       pinnedToBottomRef.current = distance < 80;
     }
+    syncScrollable(el);
     el.addEventListener('scroll', onScroll);
     return () => {
       // Capture final scroll state before unmount; the ref normally
@@ -821,6 +845,11 @@ export function ChatPane({
       // right before unmount can leave it stale.
       snapshot(el);
       el.removeEventListener('scroll', onScroll);
+      if (chatLogScrollIdleTimerRef.current !== null) {
+        window.clearTimeout(chatLogScrollIdleTimerRef.current);
+        chatLogScrollIdleTimerRef.current = null;
+      }
+      setChatLogScrolling(false);
     };
   }, [tab]);
 
@@ -843,7 +872,15 @@ export function ChatPane({
 
     const resizeObserver =
       typeof ResizeObserver !== 'undefined'
-        ? new ResizeObserver(followLatestIfPinned)
+        ? new ResizeObserver(() => {
+            const target = logRef.current;
+            if (target) {
+              const next = target.scrollHeight - target.clientHeight > 1;
+              setChatLogScrollable((prev) => (prev === next ? prev : next));
+              if (!next) setChatLogScrolling(false);
+            }
+            followLatestIfPinned();
+          })
         : null;
     const observedChildren = new Set<Element>();
     const syncObservedChildren = () => {
@@ -1071,7 +1108,12 @@ export function ChatPane({
         <>
           <div className="chat-log-wrap">
             <div
-              className={`chat-log${loading ? ' is-loading' : ''}`}
+              className={[
+                'chat-log',
+                loading ? 'is-loading' : '',
+                chatLogScrollable ? 'is-scrollable' : '',
+                chatLogScrolling ? 'is-scrolling' : '',
+              ].filter(Boolean).join(' ')}
               ref={logRef}
               aria-busy={loading}
             >

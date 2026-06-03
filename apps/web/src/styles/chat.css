@@ -218,6 +218,39 @@
   flex-direction: column;
   gap: 14px;
   min-width: 0;
+  scrollbar-width: none;
+  scrollbar-color: transparent transparent;
+}
+.chat-log.is-scrollable:hover,
+.chat-log.is-scrollable:focus-within,
+.chat-log.is-scrollable.is-scrolling {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--text-muted) 34%, transparent) transparent;
+}
+.chat-log::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.chat-log:not(.is-scrollable)::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+.chat-log::-webkit-scrollbar-track {
+  background: transparent;
+}
+.chat-log::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  background-clip: content-box;
+}
+.chat-log.is-scrollable:hover::-webkit-scrollbar-thumb,
+.chat-log.is-scrollable:focus-within::-webkit-scrollbar-thumb,
+.chat-log.is-scrollable.is-scrolling::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--text-muted) 34%, transparent);
+}
+.chat-log.is-scrollable:hover::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in srgb, var(--text-muted) 48%, transparent);
 }
 .chat-log.is-loading {
   position: relative;

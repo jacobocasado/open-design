@@ -121,15 +121,25 @@ describe('inspiration action prompts', () => {
 
   it('filters inspiration actions by action evidence and category title', () => {
     const visualCategory = BROWSER_USE_CATEGORIES.find((category) => category.id === 'visual');
+    const categoryTitle = (category: (typeof BROWSER_USE_CATEGORIES)[number]) =>
+      ({
+        assets: '素材提取',
+        tokens: '设计语言',
+        motion: '动效',
+        visual: '视觉校验',
+        structure: '组件结构',
+        project: '项目运行',
+        general: '通用操作',
+      })[category.id] ?? category.title;
     expect(visualCategory).toBeTruthy();
-    expect(filterBrowserUseCategories(BROWSER_USE_CATEGORIES, 'a11y')).toEqual([
+    expect(filterBrowserUseCategories(BROWSER_USE_CATEGORIES, 'a11y', categoryTitle)).toEqual([
       {
         ...visualCategory!,
         actions: [browserUseActionById('audit_accessibility')!],
       },
     ]);
-    expect(filterBrowserUseCategories(BROWSER_USE_CATEGORIES, '通用操作')[0]?.id).toBe('general');
-    expect(filterBrowserUseCategories(BROWSER_USE_CATEGORIES, 'no-such-action')).toEqual([]);
+    expect(filterBrowserUseCategories(BROWSER_USE_CATEGORIES, '通用操作', categoryTitle)[0]?.id).toBe('general');
+    expect(filterBrowserUseCategories(BROWSER_USE_CATEGORIES, 'no-such-action', categoryTitle)).toEqual([]);
   });
 
   it('builds an agent-browser prompt bound to the current browser tab context', () => {

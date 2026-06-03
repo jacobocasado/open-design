@@ -89,14 +89,16 @@ describe('DesignBrowserPanel <webview> navigation', () => {
     const onRequestBrowserUsePrompt = vi.fn();
 
     render(
-      <DesignBrowserPanel
-        projectId="proj-webview-browser-use"
-        initialTitle="Example"
-        initialUrl="https://example.com"
-        onOpenFile={() => {}}
-        onRefreshFiles={() => {}}
-        onRequestBrowserUsePrompt={onRequestBrowserUsePrompt}
-      />,
+      <I18nProvider initial="zh-CN">
+        <DesignBrowserPanel
+          projectId="proj-webview-browser-use"
+          initialTitle="Example"
+          initialUrl="https://example.com"
+          onOpenFile={() => {}}
+          onRefreshFiles={() => {}}
+          onRequestBrowserUsePrompt={onRequestBrowserUsePrompt}
+        />
+      </I18nProvider>,
     );
 
     fireEvent.click(screen.getByRole('button', { name: '灵感' }));

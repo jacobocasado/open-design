@@ -61,6 +61,11 @@ const MAX_SEARCH_RESULTS = 80;
 const TAB_DRAG_HAPTIC_MS = 8;
 const TAB_DROP_HAPTIC_MS = 12;
 
+function consumeWorkspaceTabShortcut(event: KeyboardEvent) {
+  event.preventDefault();
+  event.stopPropagation();
+}
+
 export function openWorkspaceTab(route: Route): void {
   window.dispatchEvent(
     new CustomEvent<{ route: Route }>(OPEN_WORKSPACE_TAB_EVENT, {
@@ -561,11 +566,61 @@ export function WorkspaceTabsBar({ route, projects }: Props) {
     };
   }, [tabsMenuOpen]);
 
-  function openTab(tab: WorkspaceChromeTab) {
-    if (dragSuppressClickRef.current) {
-      dragSuppressClickRef.current = false;
-      return;
+  useEffect(() => {
+    function onWorkspaceTabShortcut(event: KeyboardEvent) {
+      if (event.defaultPrevented) return;
+
+      const key = event.key;
+      const lowerKey = key.toLocaleLowerCase();
+      const primaryModifier = event.metaKey || event.ctrlKey;
+      const primaryWithoutAlt = primaryModifier && !event.altKey;
+      const ctrlWithoutPlatformModifiers = event.ctrlKey && !event.metaKey && !event.altKey;
+
+      if (primaryWithoutAlt && !event.shiftKey && lowerKey === 't') {
+        consumeWorkspaceTabShortcut(event);
+        createNewTab();
+        return;
+      }
+
+      if (primaryWithoutAlt && !event.shiftKey && lowerKey === 'w') {
+        consumeWorkspaceTabShortcut(event);
+        closeActiveTab();
+        return;
+      }
+
+      if (ctrlWithoutPlatformModifiers && key === 'Tab') {
+        consumeWorkspaceTabShortcut(event);
+        activateTabByOffset(event.shiftKey ? -1 : 1);
+        return;
+      }
+
+      if (ctrlWithoutPlatformModifiers && !event.shiftKey && key === 'PageDown') {
+        consumeWorkspaceTabShortcut(event);
+        activateTabByOffset(1);
+        return;
+      }
+
+      if (ctrlWithoutPlatformModifiers && !event.shiftKey && key === 'PageUp') {
+        consumeWorkspaceTabShortcut(event);
+        activateTabByOffset(-1);
+        return;
+      }
+
+      if (primaryWithoutAlt && !event.shiftKey && /^[1-9]$/u.test(key)) {
+        consumeWorkspaceTabShortcut(event);
+        const normalized = normalizeTabsState(state);
+        const targetIndex = key === '9'
+          ? normalized.tabs.length - 1
+          : Number(key) - 1;
+        activateTabByIndex(targetIndex);
+      }
     }
+
+    window.addEventListener('keydown', onWorkspaceTabShortcut, true);
+    return () => window.removeEventListener('keydown', onWorkspaceTabShortcut, true);
+  }, [state]);
+
+  function activateTab(tab: WorkspaceChromeTab) {
     setState((current) => ({
       tabs: normalizeTabsState(current).tabs.map((item) =>
         item.id === tab.id ? { ...item, lastActiveAt: Date.now() } : item,
@@ -575,6 +630,37 @@ export function WorkspaceTabsBar({ route, projects }: Props) {
     setTabsMenuOpen(false);
     dismissHoverPreview();
     navigate(routeForTab(tab));
+  }
+
+  function activateTabByOffset(offset: number) {
+    const normalized = normalizeTabsState(state);
+    if (normalized.tabs.length === 0) return;
+    const activeIndex = Math.max(
+      0,
+      normalized.tabs.findIndex((tab) => tab.id === normalized.activeTabId),
+    );
+    const targetIndex =
+      (activeIndex + offset + normalized.tabs.length) % normalized.tabs.length;
+    activateTab(normalized.tabs[targetIndex]!);
+  }
+
+  function activateTabByIndex(index: number) {
+    const normalized = normalizeTabsState(state);
+    if (index < 0 || index >= normalized.tabs.length) return;
+    activateTab(normalized.tabs[index]!);
+  }
+
+  function closeActiveTab() {
+    const normalized = normalizeTabsState(state);
+    closeTab(normalized.activeTabId);
+  }
+
+  function openTab(tab: WorkspaceChromeTab) {
+    if (dragSuppressClickRef.current) {
+      dragSuppressClickRef.current = false;
+      return;
+    }
+    activateTab(tab);
   }
 
   function createNewTab() {
