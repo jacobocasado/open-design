@@ -1335,6 +1335,10 @@
   line-height: 1.35;
 }
 
+.app .split-chat-slot > .pane {
+  --chat-composer-inline-inset: 10px;
+}
+
 .app .composer {
   padding: 8px 10px 10px;
   background: transparent;

@@ -850,6 +850,10 @@
 }
 
 /* -------- Composer -------------------------------------------------- */
+.pane {
+  --chat-composer-inline-inset: 12px;
+}
+
 .composer {
   border-top: none;
   padding: 10px 12px 12px;
@@ -1371,13 +1375,13 @@
 .chat-queued-send-strip {
   display: flex;
   flex-direction: column;
-  align-self: stretch;
-  width: 100%;
+  align-self: auto;
+  width: calc(100% - (var(--chat-composer-inline-inset, 12px) * 2));
   min-width: 0;
   max-width: none;
   gap: 3px;
   box-sizing: border-box;
-  margin: 0 0 2px;
+  margin: 0 var(--chat-composer-inline-inset, 12px) 2px;
   padding: 7px;
   overflow: visible;
   border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);

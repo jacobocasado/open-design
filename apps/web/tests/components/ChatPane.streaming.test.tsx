@@ -159,8 +159,13 @@ describe('ChatPane streaming state', () => {
     expect(css).toContain('.chat-queued-send-title');
     expect(css).toContain('text-overflow: ellipsis;');
     expect(css).toContain('.chat-queued-send-drag-handle');
-    expect(css).toContain('align-self: stretch;');
-    expect(css).toContain('width: 100%;');
+    expect(css).toContain('align-self: auto;');
+    expect(css).toContain('.pane {');
+    expect(css).toContain('--chat-composer-inline-inset: 12px;');
+    expect(css).toContain('.app .split-chat-slot > .pane');
+    expect(css).toContain('--chat-composer-inline-inset: 10px;');
+    expect(css).toContain('width: calc(100% - (var(--chat-composer-inline-inset, 12px) * 2));');
+    expect(css).toContain('margin: 0 var(--chat-composer-inline-inset, 12px) 2px;');
     expect(css).toContain('max-width: none;');
     expect(css).toContain('.chat-queued-send-action');
     expect(css).toContain('width: 24px;');
