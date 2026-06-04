@@ -1321,6 +1321,30 @@ describe('FileWorkspace generation failure recovery', () => {
 
     expect(screen.getByTestId('generation-preview-stage')).toBeTruthy();
   });
+
+  // The override above is scoped to the *empty* design-files tab. A populated
+  // project must keep its file browser while a run is in flight instead of
+  // having the generation card hijack the tab — otherwise the fresh-project fix
+  // would regress browsing for everyone with existing files.
+  it('keeps the file browser on a populated design-files tab while a run is active', async () => {
+    render(
+      <FileWorkspace
+        projectId="project-1"
+        projectKind="prototype"
+        files={[workspaceFile('index.html')]}
+        liveArtifacts={[]}
+        onRefreshFiles={vi.fn()}
+        isDeck={false}
+        streaming
+        tabsState={{ tabs: [], active: DESIGN_FILES_TAB }}
+        onTabsStateChange={vi.fn()}
+        messages={[generatingAssistantMessage()]}
+      />,
+    );
+
+    expect(await screen.findByText('index.html')).toBeTruthy();
+    expect(screen.queryByTestId('generation-preview-stage')).toBeNull();
+  });
 });
 
 describe('DesignFilesPanel plugin folders', () => {
