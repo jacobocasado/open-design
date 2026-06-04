@@ -375,18 +375,25 @@ async function resolveReferenceImages(
     const lower = relPath.toLowerCase();
     if (!AUTO_DISCOVERED_REFERENCE_IMAGE_RE.test(lower)) return false;
     if (lower.startsWith('critique/')) return false;
-    const name = path.basename(lower);
-    const dir = path.dirname(lower);
-    return name.startsWith('reference')
-      || name.startsWith('spec')
-      || name.startsWith('baseline')
-      || name.startsWith('expected')
-      || dir.includes('references')
-      || dir.includes('reference')
-      || dir.includes('spec');
+    return isAutoDiscoveredReferenceImage(lower);
   });
   candidates.sort();
   return candidates.map((relPath) => path.join(cwd, relPath));
+}
+
+function isAutoDiscoveredReferenceImage(relPath: string): boolean {
+  const name = path.basename(relPath);
+  const dir = path.dirname(relPath);
+  return isNamedReferenceImage(name)
+    || dir.includes('references')
+    || dir.includes('reference')
+    || dir.includes('spec');
+}
+
+function isNamedReferenceImage(name: string): boolean {
+  return name.startsWith('reference')
+    || name.startsWith('baseline')
+    || name.startsWith('expected');
 }
 
 async function walkFiles(root: string, relDir: string): Promise<string[]> {

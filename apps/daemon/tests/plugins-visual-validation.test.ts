@@ -371,6 +371,56 @@ describe('visual validation atom runner', () => {
     }
   });
 
+  it('ignores arbitrary root-level spec-prefixed PNG assets', async () => {
+    const cwd = await mkdtemp(path.join(os.tmpdir(), 'od-visual-root-spec-asset-'));
+    try {
+      await writeFile(path.join(cwd, 'index.html'), '<!doctype html><html><body>ok</body></html>', 'utf8');
+      await writeFile(
+        path.join(cwd, 'special-offer.png'),
+        PNG.sync.write(createFilledPng(200, 120, [255, 255, 255, 255])),
+      );
+
+      const result = await runVisualValidation({
+        cwd,
+        entryUrl: 'about:blank',
+        captureScreenshot: async ({ outputPath }) => {
+          await writeFile(outputPath, PNG.sync.write(createFilledPng(200, 120, [255, 255, 255, 255])));
+        },
+      });
+
+      expect(result.report.status).toBe('skipped');
+      expect(result.report.message).toContain('no reference screenshot found');
+      expect(result.signals).toEqual({});
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('still auto-discovers spec-directory PNG assets', async () => {
+    const cwd = await mkdtemp(path.join(os.tmpdir(), 'od-visual-spec-dir-'));
+    try {
+      await writeFile(path.join(cwd, 'index.html'), '<!doctype html><html><body>ok</body></html>', 'utf8');
+      await mkdir(path.join(cwd, 'spec'), { recursive: true });
+      await writeFile(
+        path.join(cwd, 'spec', 'special-offer.png'),
+        PNG.sync.write(createFilledPng(200, 120, [255, 255, 255, 255])),
+      );
+
+      const result = await runVisualValidation({
+        cwd,
+        entryUrl: 'about:blank',
+        captureScreenshot: async ({ outputPath }) => {
+          await writeFile(outputPath, PNG.sync.write(createFilledPng(200, 120, [255, 255, 255, 255])));
+        },
+      });
+
+      expect(result.report.status).toBe('ok');
+      expect(result.report.comparison?.referencePath).toBe('spec/special-offer.png');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('skips symlinked directories while scanning for references', async () => {
     const cwd = await mkdtemp(path.join(os.tmpdir(), 'od-visual-symlink-cycle-'));
     try {
