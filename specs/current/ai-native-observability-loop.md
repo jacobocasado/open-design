@@ -49,6 +49,29 @@ That means Open Design can inspect individual runs, but the system does not yet
 turn production evidence into enough datasets, experiments, annotation queues,
 and release gates to drive continuous improvement.
 
+The storage foundation is partly in place but not yet connected to this
+observability boundary:
+
+- project files, uploads, pasted content, generated files, and live artifacts
+  currently live under the local project filesystem rooted at
+  `<dataDir>/projects/<projectId>`;
+- saved standalone HTML artifacts live under `<dataDir>/artifacts` and are
+  served through the daemon's static `/artifacts/*` route;
+- media generation writes its output into the same project file directory;
+- `ProjectStorage`, `LocalProjectStorage`, and `S3ProjectStorage` already define
+  a read/write/list/delete/stat adapter contract for S3-compatible stores, but
+  the current project file and artifact routes still call the local filesystem
+  helpers directly;
+- Cloudflare R2 / S3-compatible storage is already used for release artifacts,
+  visual-regression assets, landing-page static assets, and mock recordings, so
+  the repository has S3-compatible operational precedent outside the product
+  runtime.
+
+The gap is therefore not "does Open Design know how to talk to object storage?"
+The gap is productizing that substrate for user attachments, generated
+artifacts, access control, manifest indexing, retention, signed inspection URLs,
+and Langfuse-safe observability payloads.
+
 ## Target Model
 
 Open Design should treat observability as a closed loop:
@@ -184,6 +207,55 @@ This boundary resolves the conflict between Langfuse truncation and incomplete
 product analytics: Langfuse gets complete trace-safe semantics, while Open
 Design keeps complete raw data behind product authorization and retention
 policies.
+
+### Attachment and Artifact Registry
+
+Open Design should add a registry layer above `ProjectStorage` instead of
+letting traces, filesystem paths, and UI URLs each invent their own storage
+semantics. The registry is the product source of truth for durable input and
+output objects; Langfuse stores only registry-derived manifest fields.
+
+Recommended object classes:
+
+| Object class | Examples | Registry owner |
+| --- | --- | --- |
+| `attachment` | Uploaded images, PDFs, brand files, reference assets, pasted files. | User/project input pipeline. |
+| `parsed_attachment` | OCR text, extracted PDF text, thumbnails, embeddings, image descriptors. | Attachment ingest worker. |
+| `artifact` | HTML prototypes, images, decks, documents, audio/video, code packages. | Agent/tool output pipeline. |
+| `preview` | Rendered preview HTML, screenshots, thumbnails, validation captures. | Preview/verification pipeline. |
+| `export` | Downloadable bundles, handoff packages, deployment artifacts. | Export/finalize pipeline. |
+| `replay` | Minimal reproduction bundle, prompt stack snapshot, selected logs. | Observability/evaluation pipeline. |
+
+Each registry record should have a stable id, object class, workspace/project/run
+scope, storage backend, storage key, content hash, MIME type, byte size, origin,
+retention policy, sensitivity class, redaction state, parse/build status,
+preview/export status when applicable, and provenance back to the source trace
+or run.
+
+The storage reference in Langfuse should be durable and non-secret:
+
+```text
+od://objects/workspaces/<workspaceId>/projects/<projectId>/runs/<runId>/<objectClass>/<objectId>
+```
+
+The daemon should resolve that reference through product authorization and then,
+only for interactive viewing or replay, issue a short-lived signed URL or stream
+the object through a guarded daemon endpoint. Long-lived signed URLs should not
+be written to Langfuse, PostHog, datasets, or PR comments.
+
+The registry should use the existing `ProjectStorage` contract as the first
+storage backend boundary, but the product routes need one more layer:
+
+```text
+HTTP / CLI / tool route
+  -> AttachmentRegistry or ArtifactRegistry
+  -> ProjectStorage backend (local by default, s3 when configured)
+  -> object manifest event
+  -> Langfuse trace-safe metadata
+```
+
+This keeps local-first desktop usage intact while making cloud-backed storage an
+environment choice rather than a product model fork.
 
 ### Score Model
 
@@ -367,10 +439,19 @@ Data completeness:
 - Define the Open Design object storage contract for attachments, parsed
   derivatives, generated artifacts, preview screenshots, export bundles, and
   reproducibility files.
+- Define the registry schema and `od://` reference format for `attachment`,
+  `parsed_attachment`, `artifact`, `preview`, `export`, and `replay` objects.
 - Store original heavy inputs and outputs in Open Design controlled storage,
   not in Langfuse by default.
 - Store durable object references, hashes, summaries, redaction state,
   truncation state, and parse/build status in Langfuse.
+- Wire user upload, project files, standalone artifact save, live artifact,
+  media generation, preview verification, and export/finalize flows through the
+  registry instead of writing unindexed files only.
+- Reuse `ProjectStorage` as the backend adapter boundary: local remains the
+  default, while S3-compatible storage is enabled by environment configuration
+  once product authorization, retention, and signed inspection URLs are in
+  place.
 - Add masking before Langfuse ingestion so raw sensitive content cannot leak
   through input, output, or metadata fields.
 
