@@ -4,7 +4,7 @@ set -Eeuo pipefail
 mode="${1:-${OD_CI_MODE:-}}"
 
 if [ -z "$mode" ]; then
-  echo "usage: $0 <probe|setup|policy|unit|typecheck>" >&2
+  echo "usage: $0 <probe|setup|policy|unit|typecheck|daemon>" >&2
   exit 2
 fi
 
@@ -43,7 +43,7 @@ capture_cmd() {
 
 require_mode() {
   case "$mode" in
-    probe | setup | policy | unit | typecheck) ;;
+    probe | setup | policy | unit | typecheck | daemon) ;;
     *)
       echo "unknown CI mode: $mode" >&2
       exit 2
@@ -188,8 +188,13 @@ workspace_typecheck_exit_code="0"
 workspace_typecheck_seconds="0"
 scripts_typecheck_exit_code="0"
 scripts_typecheck_seconds="0"
+daemon_status="skipped"
+daemon_exit_code="0"
+daemon_seconds="0"
+daemon_test_exit_code="0"
+daemon_test_seconds="0"
 
-if [ "$mode" = "setup" ] || [ "$mode" = "policy" ] || [ "$mode" = "unit" ] || [ "$mode" = "typecheck" ]; then
+if [ "$mode" = "setup" ] || [ "$mode" = "policy" ] || [ "$mode" = "unit" ] || [ "$mode" = "typecheck" ] || [ "$mode" = "daemon" ]; then
   append_summary ""
   append_summary "### Install"
   append_summary ""
@@ -388,6 +393,41 @@ if [ "$mode" = "typecheck" ] && [ "$install_exit_code" = "0" ]; then
   typecheck_seconds="$(( $(date +%s) - typecheck_start ))"
 fi
 
+record_daemon_result() {
+  local label="$1"
+  local exit_code="$2"
+  local seconds="$3"
+
+  append_summary "| \`$label\` | \`$exit_code\` | \`$seconds\` |"
+  if [ "$exit_code" != "0" ] && [ "$daemon_status" = "ok" ]; then
+    daemon_status="failed"
+    daemon_exit_code="$exit_code"
+  fi
+}
+
+if [ "$mode" = "daemon" ] && [ "$install_exit_code" = "0" ]; then
+  append_summary ""
+  append_summary "### Daemon workspace tests"
+  append_summary ""
+  append_summary "| Check | Exit code | Seconds |"
+  append_summary "| --- | ---: | ---: |"
+
+  daemon_status="ok"
+  daemon_start="$(date +%s)"
+
+  run_ci_command "@open-design/daemon build" pnpm --filter @open-design/daemon build
+  daemon_build_exit_code="$last_command_exit_code"
+  daemon_build_seconds="$last_command_seconds"
+  record_daemon_result "@open-design/daemon build" "$daemon_build_exit_code" "$daemon_build_seconds"
+
+  run_ci_command "@open-design/daemon test" pnpm --filter @open-design/daemon test
+  daemon_test_exit_code="$last_command_exit_code"
+  daemon_test_seconds="$last_command_seconds"
+  record_daemon_result "@open-design/daemon test" "$daemon_test_exit_code" "$daemon_test_seconds"
+
+  daemon_seconds="$(( $(date +%s) - daemon_start ))"
+fi
+
 if [ -n "$pnpm_store" ] && [ -d "$pnpm_store" ]; then
   pnpm_store_size="$(du -sh "$pnpm_store" 2>/dev/null | awk '{print $1}')"
 fi
@@ -408,6 +448,8 @@ append_summary "| Unit status | \`$unit_status\` |"
 append_summary "| Unit seconds | \`$unit_seconds\` |"
 append_summary "| Typecheck status | \`$typecheck_status\` |"
 append_summary "| Typecheck seconds | \`$typecheck_seconds\` |"
+append_summary "| Daemon status | \`$daemon_status\` |"
+append_summary "| Daemon seconds | \`$daemon_seconds\` |"
 
 cat > "$manifest" <<JSON
 {
@@ -474,6 +516,11 @@ cat > "$manifest" <<JSON
   "workspaceTypecheckSeconds": "$(json_escape "$workspace_typecheck_seconds")",
   "scriptsTypecheckExitCode": "$(json_escape "$scripts_typecheck_exit_code")",
   "scriptsTypecheckSeconds": "$(json_escape "$scripts_typecheck_seconds")",
+  "daemonStatus": "$(json_escape "$daemon_status")",
+  "daemonExitCode": "$(json_escape "$daemon_exit_code")",
+  "daemonSeconds": "$(json_escape "$daemon_seconds")",
+  "daemonTestExitCode": "$(json_escape "$daemon_test_exit_code")",
+  "daemonTestSeconds": "$(json_escape "$daemon_test_seconds")",
   "dockerVersion": "$(json_escape "$docker_version")",
   "dockerStatus": "$(json_escape "$docker_status")",
   "rootDisk": "$(json_escape "$disk_root")",
@@ -497,4 +544,8 @@ fi
 
 if [ "$typecheck_exit_code" != "0" ]; then
   exit "$typecheck_exit_code"
+fi
+
+if [ "$daemon_exit_code" != "0" ]; then
+  exit "$daemon_exit_code"
 fi
