@@ -81,6 +81,9 @@ describe("release workflows", () => {
     expect(publishPlatform).toContain("open-design-${releaseVersion}${assetSuffix}-win-x64-payload.7z");
     expect(publishPlatform).toContain("payload: assetEntry(payload)");
     expect(buildWin).toContain("function Validate-WinLauncherPayloadArchive");
+    expect(buildWin).toContain('Measure-Step "clean tools-pack win namespace"');
+    expect(buildWin.indexOf('Measure-Step "clean tools-pack win namespace"')).toBeLessThan(buildWin.indexOf('Measure-Step "tools-pack win build"'));
+    expect(buildWin).toContain('"tools-pack", "win", "cleanup"');
     expect(buildWin).toContain('Measure-Step "validate launcher payload artifact"');
     expect(buildWin).toContain('Measure-Step "validate launcher payload update fixture"');
     expect(buildWin).toContain('Test-JsonString $manifest.entry.executable "entry.executable" "payload/Open Design.exe"');
