@@ -284,8 +284,63 @@ describe('ComposerPlusMenu pick-row caret protection', () => {
 
       const menu = screen.getAllByRole('menu')[0];
       expect(menu).toBeDefined();
+      expect(menu?.className).toContain('plus-menu__popup--flyout-y-down');
       expect(menu?.style.getPropertyValue('--plus-menu-flyout-max-height')).toBe('303px');
       expect(screen.getByRole('menuitem', { name: /Deck Maker/i })).toBeTruthy();
+    } finally {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalInnerWidth });
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: originalInnerHeight });
+    }
+  });
+
+  it('opens low flyouts upward when the hovered row is near the viewport bottom', () => {
+    const originalInnerWidth = window.innerWidth;
+    const originalInnerHeight = window.innerHeight;
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1200 });
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 520 });
+
+    try {
+      renderMenu({
+        toolboxLabel: 'Design toolbox',
+        renderToolbox: () => <div>Toolbox content</div>,
+      });
+      const trigger = screen.getByTestId('plus-trigger') as HTMLButtonElement;
+      trigger.getBoundingClientRect = () =>
+        ({
+          x: 24,
+          y: 468,
+          top: 468,
+          left: 24,
+          right: 52,
+          bottom: 496,
+          width: 28,
+          height: 28,
+          toJSON: () => ({}),
+        }) as DOMRect;
+
+      fireEvent.click(trigger);
+      const toolboxParent = screen.getByRole('menuitem', { name: /Design toolbox/i });
+      const toolboxRow = toolboxParent.closest('.plus-menu__submenu-row') as HTMLDivElement;
+      toolboxRow.getBoundingClientRect = () =>
+        ({
+          x: 24,
+          y: 330,
+          top: 330,
+          left: 24,
+          right: 214,
+          bottom: 362,
+          width: 190,
+          height: 32,
+          toJSON: () => ({}),
+        }) as DOMRect;
+
+      fireEvent.click(toolboxParent);
+
+      const menu = screen.getAllByRole('menu')[0];
+      expect(menu).toBeDefined();
+      expect(menu?.className).toContain('plus-menu__popup--flyout-y-up');
+      expect(menu?.style.getPropertyValue('--plus-menu-flyout-max-height')).toBe('320px');
+      expect(screen.getByText('Toolbox content')).toBeTruthy();
     } finally {
       Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalInnerWidth });
       Object.defineProperty(window, 'innerHeight', { configurable: true, value: originalInnerHeight });

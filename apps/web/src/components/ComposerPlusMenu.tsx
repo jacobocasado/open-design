@@ -22,6 +22,7 @@ const PLUS_MENU_FLYOUT_WIDTH = 360;
 const PLUS_MENU_PREFERRED_MIN_HEIGHT = 180;
 const PLUS_MENU_FLYOUT_MAX_HEIGHT = 320;
 type PlusMenuFlyoutPlacement = 'right' | 'left' | 'contained';
+type PlusMenuFlyoutVerticalPlacement = 'down' | 'up';
 type PlusMenuPopupStyle = CSSProperties & Record<'--plus-menu-flyout-max-height', string>;
 
 function getFlyoutBoundary(anchor: HTMLElement): Pick<DOMRect, 'left' | 'right'> {
@@ -172,6 +173,7 @@ export function ComposerPlusMenu({
   const [query, setQuery] = useState('');
   const [menuStyle, setMenuStyle] = useState<CSSProperties | null>(null);
   const [flyoutPlacement, setFlyoutPlacement] = useState<PlusMenuFlyoutPlacement>('right');
+  const [flyoutVerticalPlacement, setFlyoutVerticalPlacement] = useState<PlusMenuFlyoutVerticalPlacement>('down');
   const [flyoutMaxHeight, setFlyoutMaxHeight] = useState(PLUS_MENU_FLYOUT_MAX_HEIGHT);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
@@ -190,15 +192,27 @@ export function ComposerPlusMenu({
     setSubmenu(null);
   }
 
-  function updateFlyoutMaxHeight(row: HTMLDivElement | null) {
+  function updateFlyoutGeometry(row: HTMLDivElement | null) {
     if (!row) {
+      setFlyoutVerticalPlacement('down');
       setFlyoutMaxHeight(PLUS_MENU_FLYOUT_MAX_HEIGHT);
       return;
     }
     const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 640;
-    const rowTop = row.getBoundingClientRect().top - 5;
+    const rowRect = row.getBoundingClientRect();
+    const downSpace = viewportHeight - (rowRect.top - 5) - PLUS_MENU_MARGIN;
+    const upSpace = rowRect.bottom + 5 - PLUS_MENU_MARGIN;
+    const verticalPlacement =
+      downSpace >= PLUS_MENU_FLYOUT_MAX_HEIGHT || downSpace >= upSpace ? 'down' : 'up';
+    setFlyoutVerticalPlacement(verticalPlacement);
     setFlyoutMaxHeight(
-      Math.max(120, Math.min(PLUS_MENU_FLYOUT_MAX_HEIGHT, viewportHeight - rowTop - PLUS_MENU_MARGIN)),
+      Math.max(
+        120,
+        Math.min(
+          PLUS_MENU_FLYOUT_MAX_HEIGHT,
+          verticalPlacement === 'up' ? upSpace : downSpace,
+        ),
+      ),
     );
   }
 
@@ -206,7 +220,7 @@ export function ComposerPlusMenu({
     next: 'connectors' | 'plugins' | 'mcp' | 'toolbox',
     row: HTMLDivElement | null,
   ) {
-    updateFlyoutMaxHeight(row);
+    updateFlyoutGeometry(row);
     setSubmenu(next);
   }
 
@@ -245,7 +259,7 @@ export function ComposerPlusMenu({
       setMenuStyle(getPlusMenuStyle(anchor));
       setFlyoutPlacement(getFlyoutPlacement(anchor));
       const activeRow = popupRef.current?.querySelector<HTMLDivElement>('.plus-menu__submenu-row.is-open') ?? null;
-      updateFlyoutMaxHeight(activeRow);
+      updateFlyoutGeometry(activeRow);
     };
 
     updateMenuPosition();
@@ -297,7 +311,7 @@ export function ComposerPlusMenu({
       {open && typeof document !== 'undefined' ? createPortal(
         <div
           ref={popupRef}
-          className={`plus-menu__popup plus-menu__popup--flyout-${flyoutPlacement}`}
+          className={`plus-menu__popup plus-menu__popup--flyout-${flyoutPlacement} plus-menu__popup--flyout-y-${flyoutVerticalPlacement}`}
           role="menu"
           style={popupStyle}
         >

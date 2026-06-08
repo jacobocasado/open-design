@@ -122,6 +122,10 @@
   margin-left: 0;
   margin-right: 4px;
 }
+.plus-menu__popup--flyout-y-up .plus-menu__flyout {
+  top: auto;
+  bottom: -5px;
+}
 /* Invisible bridge so the cursor can cross the gap into the flyout without
    triggering the row's mouseleave. */
 .plus-menu__flyout::before {
@@ -141,6 +145,7 @@
   left: auto;
   right: auto;
   top: auto;
+  bottom: auto;
   width: auto;
   min-width: 0;
   max-width: none;
