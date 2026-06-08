@@ -466,6 +466,34 @@ describe('telemetry worker', () => {
     expect(put).not.toHaveBeenCalled();
   });
 
+  it('rejects object batches without upload authority before reading the body', async () => {
+    const put = vi.fn(async () => ({}));
+    const request = new Request('https://telemetry.open-design.ai/api/objects/batch', {
+      method: 'POST',
+      headers: {
+        'X-Open-Design-Telemetry': 'object-ingestion-v1',
+      },
+      body: 'object body should not be read',
+    });
+    const textSpy = vi.spyOn(request, 'text').mockRejectedValue(
+      new Error('object body should not be read'),
+    );
+    const response = await worker.fetch(
+      request,
+      {
+        ...env,
+        TRACE_OBJECT_BUCKET: { put },
+      },
+    );
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({
+      error: 'object relay upload authority is not configured',
+    });
+    expect(textSpy).not.toHaveBeenCalled();
+    expect(put).not.toHaveBeenCalled();
+  });
+
   it('rejects object refs outside the signed project and run namespace', async () => {
     const put = vi.fn(async () => ({}));
     const response = await worker.fetch(

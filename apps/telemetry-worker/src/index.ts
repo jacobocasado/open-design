@@ -528,9 +528,10 @@ async function handleObjectBatchRequest(request: Request, env: Env): Promise<Res
   if (request.headers.get(RELAY_MARKER_HEADER) !== OBJECT_RELAY_MARKER_VALUE) {
     return jsonResponse(403, { error: 'missing object client marker' });
   }
-  if (!env.TRACE_OBJECT_BUCKET) {
-    return jsonResponse(503, { error: 'object relay is not configured' });
+  if (!hasObjectRelayConfig(env)) {
+    return jsonResponse(503, { error: 'object relay upload authority is not configured' });
   }
+  const objectBucket = env.TRACE_OBJECT_BUCKET!;
 
   const contentType = request.headers.get('content-type') ?? '';
   if (!contentType.toLowerCase().includes('application/json')) {
@@ -632,7 +633,7 @@ async function handleObjectBatchRequest(request: Request, env: Env): Promise<Res
       });
       continue;
     }
-    await env.TRACE_OBJECT_BUCKET.put(key, bytes, {
+    await objectBucket.put(key, bytes, {
       httpMetadata: {
         contentType: typeof object.mime === 'string' ? object.mime : 'application/octet-stream',
       },
