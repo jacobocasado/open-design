@@ -317,7 +317,7 @@ describe('buildTracePayload', () => {
     expect(write.output).toBe('[REDACTED:tool_output:content_tool:Write]');
   });
 
-  it('adds prompt-stack metadata to trace and generation without replacing user prompt input', () => {
+  it('adds full prompt-stack content once on generation input and flat metadata elsewhere', () => {
     const promptTelemetry = buildPromptStackTelemetry({
       composedPrompt:
         '# Instructions\n\nWork in /Users/alice/project\n\n---\n# User request\n\nBuild a card',
@@ -356,19 +356,15 @@ describe('buildTracePayload', () => {
         }),
       ],
     });
-    expect(trace.metadata.promptStack).toMatchObject({
-      redactionVersion: 'prompt-stack-redaction-v1',
-      sectionCount: 3,
-    });
-    expect(generation.metadata.promptStack).toEqual(trace.metadata.promptStack);
-    expect(trace.metadata.promptStack.sections[0].redactedContent).toContain(
-      '[REDACTED:path]',
-    );
-    expect(trace.metadata.promptStack.sections[2].redactedContent).toBeUndefined();
+    expect(trace.metadata.promptStack).toBeUndefined();
+    expect(generation.metadata.promptStack).toBeUndefined();
     expect(trace.metadata.promptStack_section_daemonSystemPrompt_present).toBeUndefined();
     expect(trace.metadata.promptStack_section_attachments_present).toBeUndefined();
     expect(trace.metadata.promptStack_section_daemonSystemPrompt_rawBytes).toBeUndefined();
     expect(trace.metadata.promptStack_promptFingerprint).toMatch(/^sha256:/);
+    expect(generation.metadata.promptStack_promptFingerprint).toBe(
+      trace.metadata.promptStack_promptFingerprint,
+    );
   });
 
   it('omits prompt-stack redactedContent when metrics or content consent is off', () => {
@@ -385,8 +381,8 @@ describe('buildTracePayload', () => {
       const trace = bodyOf(batch, 'trace-create');
       const generation = bodyOf(batch, 'generation-create', 'llm');
       expect(trace.input).toBeUndefined();
-      expect(trace.metadata.promptStack.sections[0].redactedContent).toBeUndefined();
-      expect(trace.metadata.promptStack.redactedContentBytes).toBe(0);
+      expect(trace.metadata.promptStack).toBeUndefined();
+      expect(trace.metadata.promptStack_redactedContentBytes).toBe(0);
       expect(generation.input).toMatchObject({
         type: 'open-design.prompt-stack',
         redactedContentBytes: 0,
@@ -1072,33 +1068,14 @@ describe('buildTracePayload', () => {
       },
       output: {
         status: 'prompt_stack_ready',
-        content_policy: 'redacted_prompt_stack_inline_with_object_refs',
+        content_policy: 'redacted_prompt_stack_on_generation_input_with_object_refs',
         prompt_stack_available: true,
         section_count: 3,
-        prompt_stack: {
-          type: 'open-design.prompt-stack',
-          sectionCount: 3,
-          sections: [
-            expect.objectContaining({
-              kind: 'daemonSystemPrompt',
-              redactedContent: expect.stringContaining('[REDACTED:path]'),
-            }),
-            expect.objectContaining({
-              kind: 'userRequest',
-              redactedContent: 'Build the card',
-            }),
-            expect.objectContaining({
-              kind: 'attachments',
-              contentMode: 'metadata-only',
-              metadata: expect.objectContaining({
-                count: 1,
-              }),
-            }),
-          ],
-        },
+        stack_fingerprint: expect.stringMatching(/^sha256:/),
       },
     });
     expect(bodyOf(batch, 'span-create', 'prompt-build').input.prompt_stack).toBeUndefined();
+    expect(bodyOf(batch, 'span-create', 'prompt-build').output.prompt_stack).toBeUndefined();
     expect(bodyOf(batch, 'span-create', 'spawn')).toMatchObject({
       id: 'run-spans-phase-spawn',
       parentObservationId: 'run-spans-gen',
@@ -1527,6 +1504,46 @@ describe('reportRunCompleted', () => {
       'span-create',
       'span-create',
     ]);
+    expect(result).toEqual({
+      langfuse_expected: true,
+      langfuse_delivery_status: 'accepted',
+    });
+  });
+
+  it('keeps a max-budget prompt stack under the hard batch cap', async () => {
+    const maxBudgetSection = 'x'.repeat(64 * 1024);
+    const promptTelemetry = buildPromptStackTelemetry({
+      composedPrompt: maxBudgetSection.repeat(8),
+      sections: [
+        { kind: 'daemonSystemPrompt', content: maxBudgetSection.repeat(2) },
+        { kind: 'runtimeToolPrompt', content: maxBudgetSection },
+        { kind: 'clientSystemPrompt', content: maxBudgetSection },
+        { kind: 'skillPrompt', content: maxBudgetSection },
+        { kind: 'designSystemPrompt', content: maxBudgetSection },
+        { kind: 'pluginStagePrompt', content: maxBudgetSection },
+        { kind: 'researchCommandContract', content: maxBudgetSection },
+      ],
+    });
+    expect(promptTelemetry.redactedContentBytes).toBe(512 * 1024);
+
+    const fetchSpy = vi.fn().mockResolvedValue(
+      new Response('{}', { status: 200 }),
+    );
+    const result = await reportRunCompleted(
+      makeCtx({
+        prefs: { metrics: true, content: true, artifactManifest: false },
+        promptTelemetry,
+      }),
+      {
+        config: TEST_CONFIG,
+        fetchImpl: fetchSpy as any,
+      },
+    );
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const init = fetchSpy.mock.calls[0]![1] as RequestInit;
+    const serialized = init.body as string;
+    expect(Buffer.byteLength(serialized, 'utf8')).toBeLessThan(1024 * 1024);
     expect(result).toEqual({
       langfuse_expected: true,
       langfuse_delivery_status: 'accepted',

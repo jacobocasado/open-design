@@ -845,12 +845,9 @@ function buildTimingSpanBodies(
             ? 'unmeasured'
             : 'prompt_stack_ready',
         content_policy: opts.promptStack
-          ? 'redacted_prompt_stack_inline_with_object_refs'
+          ? 'redacted_prompt_stack_on_generation_input_with_object_refs'
           : 'metadata_only_or_unavailable',
         ...promptBuildSummary(ctx.promptTelemetry),
-        prompt_stack: opts.promptStack
-          ? structuredPromptStackInput(opts.promptStack)
-          : undefined,
       },
       metadata: { boundary: 'promptBuildStartAt -> promptBuildEndAt' },
     },
@@ -1148,7 +1145,6 @@ export function buildTracePayload(ctx: ReportContext): unknown[] {
     osRelease: ctx.runtime?.osRelease,
     arch: ctx.runtime?.arch,
     clientType: ctx.runtime?.clientType,
-    promptStack,
     ...promptStackFlatMetadata,
   };
 
@@ -1242,7 +1238,6 @@ export function buildTracePayload(ctx: ReportContext): unknown[] {
           cost_source: costBreakdown.cost_source,
           cost_breakdown: costBreakdown,
           performance_diagnostics: performanceDiagnostics,
-          promptStack,
           ...promptStackFlatMetadata,
         },
       },
@@ -1271,7 +1266,6 @@ export function buildTracePayload(ctx: ReportContext): unknown[] {
           cost_source: costBreakdown.cost_source,
           cost_breakdown: costBreakdown,
           performance_diagnostics: performanceDiagnostics,
-          promptStack,
           ...promptStackFlatMetadata,
           reason: 'no_model_generation',
         },
