@@ -259,7 +259,7 @@ or the Vela / AMR CLI binary.
 - Selecting `prod` writes `OPEN_DESIGN_AMR_PROFILE: "prod"` explicitly instead
   of deleting the key.
 - The menu validates choices against `prod | test | local` before writing.
-- Menu structure is `Develop` -> `AMR Environment Profile` -> `prod`, `test`,
+- Menu structure is `Develop` -> `AMR Profile` -> `prod`, `test`,
   `local`.
 - This spec does not add updater, diagnostics, DevTools, feature flags, or
   other testing actions to `Develop`.
@@ -432,7 +432,7 @@ Depends on: Step 1, Step 2, Step 3
 - `apps/desktop/src/main/index.ts`
   - Added a process-local hidden `Develop` menu toggled by
     `Command+Option+Shift+D` on macOS and `Control+Alt+Shift+D` elsewhere.
-  - Added `Develop -> AMR Environment Profile -> prod/test/local` radio menu
+  - Added `Develop -> AMR Profile -> prod/test/local` radio menu
     items.
   - Reads current profile from `/api/app-config` before showing the menu.
   - Writes selected profile by merging

@@ -223,7 +223,7 @@ export function createAmrEnvironmentProfileMenuItems(
 ): MenuItemConstructorOptions[] {
   return [
     {
-      label: "AMR Environment Profile",
+      label: "AMR Profile",
       submenu: AMR_ENVIRONMENT_PROFILES.map((profile) => ({
         label: profile,
         type: "radio" as const,

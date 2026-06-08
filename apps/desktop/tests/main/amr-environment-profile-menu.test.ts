@@ -67,7 +67,7 @@ describe("AMR Environment Profile desktop menu helpers", () => {
       selected.push(profile);
     });
 
-    expect(profileMenu.label).toBe("AMR Environment Profile");
+    expect(profileMenu.label).toBe("AMR Profile");
     expect(profileMenu.submenu).toEqual([
       expect.objectContaining({ label: "prod", type: "radio", checked: false }),
       expect.objectContaining({ label: "test", type: "radio", checked: true }),
