@@ -40,7 +40,10 @@ export async function openSettingsDialog(page: Page) {
     await page.getByRole('button', { name: OPEN_SETTINGS_LABEL }).first().click();
   }
   const dialog = page.getByRole('dialog');
-  const menu = page.getByRole('menu');
+  const menu = page
+    .getByTestId('entry-settings-menu')
+    .or(page.getByRole('menu', { name: SETTINGS_MENU_LABEL }))
+    .first();
   await expect
     .poll(async () => {
       if (await dialog.isVisible().catch(() => false)) return 'dialog';
