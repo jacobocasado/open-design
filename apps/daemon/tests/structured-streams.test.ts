@@ -191,7 +191,11 @@ describe('structured agent stream fixtures', () => {
 
     expect(events).toContainEqual({
       type: 'text_delta',
-      delta: '全部完成。\\n\\nDone',
+      delta: '全部完成。\\n\\n',
+    });
+    expect(events).toContainEqual({
+      type: 'text_delta',
+      delta: 'Done',
     });
     expect(events.some((event) => {
       if (typeof event !== 'object' || event === null) return false;
@@ -250,13 +254,57 @@ describe('structured agent stream fixtures', () => {
 
     expect(events).toContainEqual({
       type: 'text_delta',
-      delta: '全部完成。\\n\\nDone',
+      delta: '全部完成。\\n\\n',
+    });
+    expect(events).toContainEqual({
+      type: 'text_delta',
+      delta: 'Done',
     });
     expect(events.some((event) => {
       if (typeof event !== 'object' || event === null) return false;
       const record = event as { type?: string; delta?: string };
       return record.type === 'text_delta' && typeof record.delta === 'string' && record.delta.includes('<!doctype html>');
     })).toBe(false);
+  });
+
+  it('emits Claude prose immediately after a file write when no artifact follows', () => {
+    const events: unknown[] = [];
+    const handler = createClaudeStreamHandler((event: unknown) => events.push(event));
+    handler.feed(`${JSON.stringify({
+      type: 'stream_event',
+      event: { type: 'message_start', message: { id: 'msg-1' } },
+    })}\n${JSON.stringify({
+      type: 'stream_event',
+      event: {
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'tool_use', id: 'toolu-write-1', name: 'Write' },
+      },
+    })}\n${JSON.stringify({
+      type: 'stream_event',
+      event: {
+        type: 'content_block_delta',
+        index: 0,
+        delta: {
+          type: 'input_json_delta',
+          partial_json: '{"file_path":"index.html","content":"<!doctype html><html></html>"}',
+        },
+      },
+    })}\n${JSON.stringify({
+      type: 'stream_event',
+      event: { type: 'content_block_stop', index: 0 },
+    })}\n${JSON.stringify({
+      type: 'stream_event',
+      event: { type: 'content_block_start', index: 1, content_block: { type: 'text', text: '' } },
+    })}\n${JSON.stringify({
+      type: 'stream_event',
+      event: { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'Done, preview ready.' } },
+    })}\n`);
+
+    expect(events).toContainEqual({
+      type: 'text_delta',
+      delta: 'Done, preview ready.',
+    });
   });
 
   it('preserves later Claude artifact text after suppressing immediate file-write echo', () => {

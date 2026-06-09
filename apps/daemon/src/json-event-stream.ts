@@ -431,12 +431,10 @@ function stripDuplicateArtifactText(text: string, state: ParserState): string {
     const candidateLength = artifactOpenCandidateLength(current, openTag);
     if (state.suppressNextArtifactText && candidateLength > 0) {
       state.artifactOpenCandidate = current.slice(-candidateLength);
-      state.pendingArtifactText += current.slice(0, -candidateLength);
-      return '';
+      return current.slice(0, -candidateLength);
     }
     if (state.suppressNextArtifactText) {
-      state.pendingArtifactText += current;
-      return '';
+      return current;
     }
     return current;
   }

@@ -29,7 +29,7 @@ import {
   DESIGN_SYSTEM_WORKSPACE_DISPLAY_TITLE,
   isDesignSystemWorkspacePrompt,
 } from '../design-system-auto-prompt';
-import { latestTodoWriteInputForPinnedCard } from '../runtime/todos';
+import { isTodoWriteToolName, latestTodoWriteInputForPinnedCard } from '../runtime/todos';
 import type { AppConfig, ChatAttachment, ChatCommentAttachment, ChatMessage, ChatMessageFeedbackChange, Conversation, DesignSystemSummary, PreviewComment, Project, ProjectFile, ProjectMetadata, SkillSummary } from '../types';
 import { exactDateTime, messageTime, shortTime } from '../utils/chatTime';
 import { commentTargetDisplayName, commentsToAttachments, simplePositionLabel } from '../comments';
@@ -2222,6 +2222,7 @@ function ChatRows({
     overscanPx: CHAT_MESSAGE_OVERSCAN_PX,
     resetKey: activeConversationKey,
     initialTailRows: CHAT_VIRTUAL_INITIAL_TAIL_ROWS,
+    alwaysIncludeKey: conversationTodoInput != null ? 'conversation-todo' : undefined,
   });
 
   const renderItem = (item: ChatRenderItem) => {
@@ -2401,6 +2402,7 @@ function VirtualChatRow({
 
 function buildChatRenderItems(messages: ChatMessage[], conversationTodoInput: unknown | null): ChatRenderItem[] {
   const items: ChatRenderItem[] = [];
+  let insertedConversationTodo = false;
   for (let i = 0; i < messages.length; i += 1) {
     const message = messages[i]!;
     items.push({
@@ -2408,8 +2410,21 @@ function buildChatRenderItems(messages: ChatMessage[], conversationTodoInput: un
       key: `message:${message.id}`,
       message,
     });
+    if (
+      conversationTodoInput != null &&
+      !insertedConversationTodo &&
+      message.role === 'assistant' &&
+      message.events?.some((event) => event.kind === 'tool_use' && isTodoWriteToolName(event.name))
+    ) {
+      items.push({
+        kind: 'conversation-todo',
+        key: 'conversation-todo',
+        input: conversationTodoInput,
+      });
+      insertedConversationTodo = true;
+    }
   }
-  if (conversationTodoInput != null) {
+  if (conversationTodoInput != null && !insertedConversationTodo) {
     items.push({
       kind: 'conversation-todo',
       key: 'conversation-todo',
@@ -2447,6 +2462,7 @@ function useMeasuredVirtualWindow<T extends { key: string }>(
     overscanPx,
     resetKey,
     initialTailRows,
+    alwaysIncludeKey,
   }: {
     enabled: boolean;
     containerRef: MutableRefObject<HTMLDivElement | null>;
@@ -2454,6 +2470,7 @@ function useMeasuredVirtualWindow<T extends { key: string }>(
     overscanPx: number;
     resetKey: string;
     initialTailRows: number;
+    alwaysIncludeKey?: string;
   },
 ) {
   const measuredHeightsRef = useRef<Map<string, number>>(new Map());
@@ -2523,10 +2540,11 @@ function useMeasuredVirtualWindow<T extends { key: string }>(
     const height = viewport.height || CHAT_VIRTUAL_DEFAULT_VIEWPORT_PX;
     if (viewport.scrollTop === 0 && viewport.height === 0) {
       const start = Math.max(0, items.length - initialTailRows);
-      return items.slice(start).map((item, offset) => {
+      const rows = items.slice(start).map((item, offset) => {
         const index = start + offset;
         return { item, index, top: layout.offsets[index] ?? 0 };
       });
+      return includeVirtualRowByKey(rows, items, layout.offsets, alwaysIncludeKey);
     }
     const startTarget = Math.max(0, viewport.scrollTop - overscanPx);
     const endTarget = viewport.scrollTop + height + overscanPx;
@@ -2541,11 +2559,13 @@ function useMeasuredVirtualWindow<T extends { key: string }>(
     while (end < items.length && (layout.offsets[end] ?? 0) <= endTarget) {
       end += 1;
     }
-    return items.slice(start, end).map((item, offset) => {
+    const rows = items.slice(start, end).map((item, offset) => {
       const index = start + offset;
       return { item, index, top: layout.offsets[index] ?? 0 };
     });
+    return includeVirtualRowByKey(rows, items, layout.offsets, alwaysIncludeKey);
   }, [
+    alwaysIncludeKey,
     enabled,
     initialTailRows,
     items,
@@ -2570,6 +2590,25 @@ function useMeasuredVirtualWindow<T extends { key: string }>(
     totalHeight: layout.totalHeight,
     onMeasure,
   };
+}
+
+function includeVirtualRowByKey<T extends { key: string }>(
+  rows: Array<{ item: T; index: number; top: number }>,
+  items: T[],
+  offsets: number[],
+  key: string | undefined,
+): Array<{ item: T; index: number; top: number }> {
+  if (!key || rows.some((row) => row.item.key === key)) return rows;
+  const index = items.findIndex((item) => item.key === key);
+  if (index === -1) return rows;
+  return [
+    ...rows,
+    {
+      item: items[index]!,
+      index,
+      top: offsets[index] ?? 0,
+    },
+  ].sort((a, b) => a.index - b.index);
 }
 
 function QueuedSendStrip({

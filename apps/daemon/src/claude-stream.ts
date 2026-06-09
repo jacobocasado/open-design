@@ -223,12 +223,10 @@ export function createClaudeStreamHandler(onEvent: EventSink) {
       const candidateLength = artifactOpenCandidateLength(current, openTag);
       if (suppressNextArtifactText && candidateLength > 0) {
         artifactOpenCandidate = current.slice(-candidateLength);
-        pendingArtifactText += current.slice(0, -candidateLength);
-        return '';
+        return current.slice(0, -candidateLength);
       }
       if (suppressNextArtifactText) {
-        pendingArtifactText += current;
-        return '';
+        return current;
       }
       return current;
     }
