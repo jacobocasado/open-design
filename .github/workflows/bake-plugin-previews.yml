@@ -53,7 +53,7 @@ jobs:
       - name: Start daemon
         run: |
           pnpm tools-dev start daemon --namespace ci --daemon-port 17470
-          for i in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             if curl -sf -o /dev/null http://127.0.0.1:17470/api/plugins; then
               echo "daemon ready"; exit 0
             fi
@@ -67,7 +67,8 @@ jobs:
           # The CI clips live on R2, not on disk, so trust the manifest hash.
           PREVIEW_REMOTE: '1'
         run: |
-          export CHROME="$(which google-chrome || which google-chrome-stable || which chromium-browser)"
+          CHROME="$(which google-chrome || which google-chrome-stable || which chromium-browser)"
+          export CHROME
           echo "resolved CHROME=$CHROME"
           mkdir -p .tmp/plugin-previews
           # Seed with the committed manifest so the hash skip can reuse entries.

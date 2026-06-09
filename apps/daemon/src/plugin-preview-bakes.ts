@@ -64,7 +64,20 @@ export function bakedPreviewBlock(id: string, dir: string): BakedPreviewBlock | 
   // In production the clips live on R2 (OD_PLUGIN_PREVIEWS_BASE_URL =
   // https://<r2-public-origin>/plugin-previews); locally they fall back to the
   // daemon's own /api/plugin-previews static route over the on-disk dir.
-  const base = (process.env.OD_PLUGIN_PREVIEWS_BASE_URL?.replace(/\/+$/, '')) || PLUGIN_PREVIEWS_ROUTE;
+  const remoteBase = process.env.OD_PLUGIN_PREVIEWS_BASE_URL?.replace(/\/+$/, '');
+  // Only attach a baked preview when its clips are actually fetchable: a remote
+  // origin is configured, OR the files are present on disk to serve locally.
+  // The checked-in manifest records entries but keeps the binaries on R2, so a
+  // deployment that forgot OD_PLUGIN_PREVIEWS_BASE_URL would otherwise point the
+  // gallery at /api/plugin-previews URLs that 404 — breaking tiles instead of
+  // falling back to the live iframe.
+  if (
+    !remoteBase &&
+    (!existsSync(path.join(dir, entry.video)) || !existsSync(path.join(dir, entry.poster)))
+  ) {
+    return null;
+  }
+  const base = remoteBase || PLUGIN_PREVIEWS_ROUTE;
   return {
     poster: `${base}/${entry.poster}`,
     video: `${base}/${entry.video}`,
