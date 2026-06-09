@@ -31,6 +31,7 @@ export async function expectWorkspaceReady(page: Page) {
 }
 
 export async function openSettingsDialog(page: Page) {
+  await waitForLoadingToClear(page);
   await dismissPrivacyDialog(page);
   const settingsTrigger = page.getByTestId('entry-settings-menu-trigger');
   if (await settingsTrigger.isVisible({ timeout: 1_000 }).catch(() => false)) {
@@ -48,7 +49,12 @@ export async function openSettingsDialog(page: Page) {
     })
     .not.toBe('pending');
   if (await menu.isVisible().catch(() => false)) {
-    await menu.getByRole('menuitem', { name: SETTINGS_MENU_LABEL }).click();
+    const settingsItem = menu
+      .getByRole('menuitem', { name: SETTINGS_MENU_LABEL })
+      .or(menu.getByRole('button', { name: SETTINGS_MENU_LABEL }))
+      .first();
+    await expect(settingsItem).toBeVisible({ timeout: 10_000 });
+    await settingsItem.click();
   }
   await expect(dialog).toBeVisible({ timeout: 10_000 });
   return dialog;

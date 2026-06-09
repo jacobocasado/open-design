@@ -1,9 +1,9 @@
 import { expect, test } from '@playwright/test';
 import type { Locator, Page, Route } from '@playwright/test';
+import { openSettingsDialog } from '../lib/playwright/amr.js';
 
 const STORAGE_KEY = 'open-design:config';
 const OPEN_SETTINGS_LABEL = /Open settings|打开设置|開啟設定|Account & settings/i;
-const SETTINGS_MENU_LABEL = /Settings|设置|設定/i;
 const LOCAL_CLI_LABEL = /Local CLI|本机 CLI|本地 CLI/i;
 const MODEL_POPOVER_SELECTOR = '.model-select-searchable__popover';
 
@@ -24,22 +24,7 @@ async function gotoEntryHome(page: Page) {
 }
 
 async function openSettingsDialogFromEntry(page: Page) {
-  await waitForLoadingToClear(page);
-  await page.getByRole('button', { name: OPEN_SETTINGS_LABEL }).first().click();
-  const dialog = page.locator('.modal-settings[role="dialog"]');
-  const menu = page.getByRole('menu');
-  await expect
-    .poll(async () => {
-      if (await dialog.isVisible().catch(() => false)) return 'dialog';
-      if (await menu.isVisible().catch(() => false)) return 'menu';
-      return 'pending';
-    })
-    .not.toBe('pending');
-  if (await menu.isVisible().catch(() => false)) {
-    await menu.getByRole('menuitem', { name: SETTINGS_MENU_LABEL }).click();
-  }
-  await expect(dialog).toBeVisible();
-  return dialog;
+  return openSettingsDialog(page);
 }
 
 async function openExecutionSettings(
