@@ -145,8 +145,8 @@ test('[P2] captures the plugin detail share menu surface', async ({ page }) => {
   await card.hover();
   await home.getByTestId('plugins-home-details-visual-deck-writer').click({ force: true });
   await expect(page.getByRole('dialog', { name: /Deck Writer preview/i })).toBeVisible();
-  await page.getByTestId('plugin-share-visual-deck-writer').getByRole('button', { name: /^More$/i }).click();
-  await expect(page.locator('.plugin-share-popover[role="menu"]')).toBeVisible();
+  await page.locator('.template-share-trigger').click();
+  await expect(page.locator('.template-share-popover[role="menu"]')).toBeVisible();
 
   await captureVisual(page, 'visual-plugin-share-menu');
 });
@@ -181,7 +181,9 @@ test('[P2] captures the home plugin use staged surface', async ({ page }) => {
   await gotoVisualHome(page);
 
   const home = page.getByTestId('entry-view-home');
-  await home.getByTestId('plugins-home-use-visual-prototype-starter').click({ force: true });
+  await home.getByTestId('plugins-home-details-visual-prototype-starter').click({ force: true });
+  await expect(page.getByRole('dialog', { name: /Prototype Starter details/i })).toBeVisible();
+  await page.getByTestId('plugin-details-use-visual-prototype-starter').click();
   await expect(page.getByTestId('home-hero-active-plugin')).toContainText('Prototype Starter');
   await expect(page.getByTestId('home-hero-input')).toBeVisible();
 
@@ -192,13 +194,10 @@ test('[P2] captures the home plugin use with query surface', async ({ page }) =>
   await configureVisualPage(page);
   await gotoVisualHome(page);
 
-  const home = page.getByTestId('entry-view-home');
-  const card = home.locator('article.plugins-home__card[data-plugin-id="visual-prototype-starter"]');
-  await card.hover();
-  await home.getByTestId('plugins-home-use-menu-visual-prototype-starter').click({ force: true });
-  await home.getByTestId('plugins-home-use-with-query-visual-prototype-starter').click();
-  await expect(page.getByTestId('home-hero-active-plugin')).toContainText('Prototype Starter');
-  await expect(page.getByTestId('home-hero-input')).toContainText('Design a {{topic}} prototype.');
+  await page.getByTestId('home-hero-input').fill('@visual');
+  await expect(page.getByTestId('home-hero-plugin-picker')).toBeVisible();
+  await page.getByRole('option', { name: /Prototype Starter/i }).click();
+  await expect(page.getByTestId('home-hero-input')).toContainText('@Prototype Starter');
 
   await captureVisual(page, 'visual-home-plugin-use-with-query');
 });
