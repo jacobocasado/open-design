@@ -434,10 +434,10 @@ winDescribe('packaged windows runtime smoke', () => {
 
       const inspect = await measureSmokeStep(timings, 'wait healthy inspect eval', async () => waitForHealthyDesktop());
       expect(inspect.status?.state).toBe('running');
-      expect(inspect.status?.url).toBe('od://app/');
+      expectWindowsPackagedAppUrl(inspect.status?.url);
 
       const value = assertHealthEvalValue(inspect.eval?.value);
-      expect(value.href).toBe('od://app/');
+      expectWindowsPackagedAppUrl(value.href);
       expect(value.status).toBe(200);
       expect(value.health.ok).toBe(true);
       if (releaseVersion != null && releaseVersion !== '') expect(value.health.version).toBe(releaseVersion);
@@ -488,7 +488,7 @@ winDescribe('packaged windows runtime smoke', () => {
           waitForHealthyDesktop(),
         );
         expect(postReinstallInspect.status?.state).toBe('running');
-        expect(postReinstallInspect.status?.url).toBe('od://app/');
+        expectWindowsPackagedAppUrl(postReinstallInspect.status?.url);
       }
 
       await mkdir(dirname(screenshotPath), { recursive: true });
@@ -658,9 +658,9 @@ async function runPayloadUpdateAcceptance(options: {
 
   const postUpdateInspect = await waitForHealthyDesktopVersion(targetVersion, previousPid);
   expect(postUpdateInspect.status?.state).toBe('running');
-  expect(postUpdateInspect.status?.url).toBe('od://app/');
+  expectWindowsPackagedAppUrl(postUpdateInspect.status?.url);
   const health = assertHealthEvalValue(postUpdateInspect.eval?.value);
-  expect(health.href).toBe('od://app/');
+  expectWindowsPackagedAppUrl(health.href);
   expect(health.status).toBe(200);
   expect(health.health.ok).toBe(true);
   expect(health.health.version).toBe(targetVersion);
@@ -1137,6 +1137,10 @@ function expectPathInside(filePath: string, expectedRoot: string): void {
     normalizedPath === normalizedRoot || normalizedPath.startsWith(`${normalizedRoot}${sep}`),
     `${normalizedPath} should be inside ${normalizedRoot}`,
   ).toBe(true);
+}
+
+function expectWindowsPackagedAppUrl(value: string | null | undefined): void {
+  expect(value).toEqual(expect.stringMatching(/^(?:od:\/\/app\/|http:\/\/127\.0\.0\.1:\d+\/?)$/));
 }
 
 async function fileSizeBytes(filePath: string): Promise<number> {

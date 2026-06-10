@@ -165,6 +165,7 @@ async function main(): Promise<void> {
       }
     },
     async discoverWebUrl() {
+      if (process.platform === "win32" && sidecars.web.url != null) return sidecars.web.url;
       return packagedEntryUrl();
     },
     // Round-7 (lefarcen P2 @ runtime.ts:336): packaged main-process
