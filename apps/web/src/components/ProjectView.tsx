@@ -4055,8 +4055,9 @@ export function ProjectView({
   );
   const handleSwitchToAmrAndSend = useCallback(
     (draft: AmrPreflightSendDraft) => {
-      if (!handleSwitchToAmr()) return;
+      if (!handleSwitchToAmr()) return false;
       setPendingAmrSend(draft);
+      return true;
     },
     [handleSwitchToAmr],
   );

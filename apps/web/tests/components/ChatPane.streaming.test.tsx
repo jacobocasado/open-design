@@ -867,6 +867,64 @@ Expected output:
     expect(screen.getByText('chat.amrPreflight.title')).toBeTruthy();
   });
 
+  it('restores a blocked draft when the AMR handoff is declined', async () => {
+    const onSend = vi.fn();
+    const onSwitchToAmrAndSend = vi.fn(() => false);
+    const blockedDraft = {
+      text: 'Use a bolder export button',
+      attachments: [{ path: 'edited.md', name: 'edited.md', kind: 'file' as const }],
+      commentAttachments: [
+        { id: 'edited-comment', order: 1, filePath: 'preview.html', comment: 'Bolder' },
+      ],
+    };
+    render(
+      <ChatPane
+        projectKindForTracking="prototype"
+        messages={[]}
+        streaming={false}
+        error={null}
+        projectId="project-1"
+        projectFiles={[]}
+        onEnsureProject={async () => 'project-1'}
+        onSend={onSend}
+        onStop={vi.fn()}
+        conversations={conversations}
+        activeConversationId="conv-1"
+        onSelectConversation={vi.fn()}
+        onDeleteConversation={vi.fn()}
+        projectMetadata={projectMetadata}
+        config={localCliConfig}
+        agents={[unavailableClaudeAgent]}
+        agentsLoading={false}
+        onOpenSettings={vi.fn()}
+        onOpenAmrSettings={vi.fn()}
+        onSwitchToAmrAndSend={onSwitchToAmrAndSend}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('composer-submit'));
+
+    await waitFor(() => expect(composerMocks.restoreDraft).toHaveBeenCalledWith(blockedDraft));
+    composerMocks.restoreDraft.mockClear();
+
+    fireEvent.click(screen.getByRole('button', {
+      name: /chat\.amrPreflight\.(signInUseAmrCta|useAmrCta)/,
+    }));
+
+    expect(onSend).not.toHaveBeenCalled();
+    expect(onSwitchToAmrAndSend).toHaveBeenCalledWith({
+      prompt: blockedDraft.text,
+      attachments: blockedDraft.attachments,
+      commentAttachments: blockedDraft.commentAttachments,
+    });
+    await waitFor(() => expect(composerMocks.restoreDraft).toHaveBeenCalledWith(blockedDraft));
+    expect(composerMocks.restoreDraft).not.toHaveBeenCalledWith({
+      text: '',
+      attachments: [],
+      commentAttachments: [],
+    });
+  });
+
   it('passes a stopped inline todo after a terminal run without a final TodoWrite', () => {
     const messages: ChatMessage[] = [
       {

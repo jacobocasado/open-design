@@ -526,7 +526,7 @@ interface Props {
   agentsLoading?: boolean;
   onOpenAmrSettings?: () => void;
   onSwitchToAmrAndRetry?: (failedAssistant: ChatMessage) => void;
-  onSwitchToAmrAndSend?: (draft: AmrPreflightSendDraft) => void;
+  onSwitchToAmrAndSend?: (draft: AmrPreflightSendDraft) => boolean;
   // While ProjectView waits for the AMR sign-in before auto-sending an
   // intercepted draft, surface a visible pending strip above the composer
   // instead of leaving the user with no feedback. If that wait is cancelled
@@ -1035,12 +1035,16 @@ export function ChatPane({
     setAmrPreflightDraft(null);
     recordAmrEntry(analytics.track, 'chat_preflight_amr_continue');
     if (onSwitchToAmrAndSend) {
-      composerRef.current?.restoreDraft({
-        text: '',
-        attachments: [],
-        commentAttachments: [],
-      });
-      onSwitchToAmrAndSend(draft);
+      const accepted = onSwitchToAmrAndSend(draft);
+      if (accepted) {
+        composerRef.current?.restoreDraft({
+          text: '',
+          attachments: [],
+          commentAttachments: [],
+        });
+        return;
+      }
+      restoreBlockedSendToComposer(draft);
       return;
     }
     onOpenAmrSettings?.();
@@ -1049,6 +1053,7 @@ export function ChatPane({
     analytics.track,
     onOpenAmrSettings,
     onSwitchToAmrAndSend,
+    restoreBlockedSendToComposer,
   ]);
   useEffect(() => {
     if (!displayError || !failedRunErrorEvent?.code || !retryAssistant) return;
