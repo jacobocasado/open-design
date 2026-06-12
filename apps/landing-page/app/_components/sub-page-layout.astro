@@ -54,7 +54,11 @@ const alternateLinks = alternateLinksForPath(Astro.url.pathname).map((entry) => 
   href: new URL(entry.hrefPath, Astro.site).toString(),
 }));
 const xDefaultHref = new URL(alternateLinks[0]!.hrefPath, Astro.site).toString();
-const og = ogImage ?? heroImage;
+// Absolute URL for the social share card: og:image / twitter:image are read
+// by external crawlers outside the page-origin context, so a same-origin path
+// like `/hero-home.png?v=2` is unreliable for rich previews. `new URL()`
+// leaves an already-absolute `ogImage` untouched.
+const og = new URL(ogImage ?? heroImage, Astro.site).toString();
 const counts = await getCatalogCounts();
 const github = await getGithubRepoMeta();
 const headerHtml = renderToStaticMarkup(

@@ -1,15 +1,28 @@
 import type { APIRoute } from 'astro';
 import { getPublicPlugins } from '../../../plugin-registry';
-import { PREFIXED_LOCALES, isLocale, localePath } from '../../../_lib/i18n';
+import {
+  DEFAULT_LOCALE,
+  LANDING_LOCALES,
+  isLandingLocale,
+  localePath,
+  type LandingLocaleCode,
+} from '../../../i18n';
 
+// Localized plugin search endpoints are generated for the canonical
+// LANDING_LOCALES only (not the legacy `_lib/i18n` alias table). This keeps
+// every emitted `/<locale>/plugins/search.json` aligned with the localized
+// plugin detail routes under `[locale]/plugins/[slug]/`, so the `href`s it
+// lists resolve to pages that actually exist in the build.
 export function getStaticPaths() {
-  return PREFIXED_LOCALES.map((locale) => ({
-    params: { locale },
-  }));
+  return LANDING_LOCALES.filter((locale) => locale.code !== DEFAULT_LOCALE).map(
+    (locale) => ({ params: { locale: locale.code } }),
+  );
 }
 
 export const GET: APIRoute = ({ params }) => {
-  const locale = isLocale(params.locale) ? params.locale : 'en';
+  const locale: LandingLocaleCode = isLandingLocale(params.locale)
+    ? params.locale
+    : DEFAULT_LOCALE;
   const plugins = getPublicPlugins().map((plugin) => ({
     id: plugin.id,
     title: plugin.title,
@@ -30,7 +43,7 @@ export const GET: APIRoute = ({ params }) => {
       : undefined,
     tags: plugin.tags,
     capabilities: plugin.capabilities,
-    href: localePath(plugin.detailHref, locale, { prefixDefault: true }),
+    href: localePath(locale, plugin.detailHref),
     installCommand: plugin.installCommand,
   }));
 
