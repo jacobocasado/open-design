@@ -174,6 +174,7 @@ afterEach(() => {
   delete process.env.FAKE_VELA_LOGIN_USER_EMAIL;
   delete process.env.FAKE_VELA_LOGIN_USER_PLAN;
   delete process.env.FAKE_VELA_ENV_DUMP_PATH;
+  delete process.env.OD_PUBLIC_BASE_URL;
   delete process.env.VELA_RUNTIME_KEY;
   delete process.env.VELA_LINK_URL;
   delete process.env.OPEN_DESIGN_AMR_ANALYTICS_URL;
@@ -349,6 +350,21 @@ describe('POST /api/integrations/vela/login', () => {
     await waitForFile(dumpPath);
     const env = JSON.parse(readFileSync(dumpPath, 'utf8'));
     expect(env.VELA_API_URL).toBe(`${baseUrl}/api/integrations/vela/api-proxy`);
+  });
+
+  it('derives the default login API proxy from OD_PUBLIC_BASE_URL when configured', async () => {
+    const dumpPath = path.join(tmpHome, 'vela-env-public-base-url.json');
+    process.env.FAKE_VELA_ENV_DUMP_PATH = dumpPath;
+    process.env.OD_PUBLIC_BASE_URL = 'https://open-design.example.com/';
+
+    const { status } = await postJson(`${baseUrl}/api/integrations/vela/login`);
+    expect(status).toBe(202);
+
+    await waitForFile(dumpPath);
+    const env = JSON.parse(readFileSync(dumpPath, 'utf8'));
+    expect(env.VELA_API_URL).toBe(
+      'https://open-design.example.com/api/integrations/vela/api-proxy',
+    );
   });
 
   it('preserves an explicitly configured VELA_API_URL during login', async () => {

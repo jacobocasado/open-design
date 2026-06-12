@@ -6651,9 +6651,7 @@ export async function startServer({
   const AMR_API_UPSTREAM_ORIGIN = 'https://amr-api.open-design.ai';
 
   function velaApiProxyBaseUrl(req) {
-    const hostHeader = req.get('host');
-    if (!hostHeader) return '';
-    return `http://${hostHeader}${AMR_API_PROXY_PREFIX}`;
+    return `${getPublicBaseUrl(req)}${AMR_API_PROXY_PREFIX}`;
   }
 
   function velaProxyRequestBody(req) {
